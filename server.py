@@ -10,10 +10,20 @@ from pathlib import Path
 from flask import Flask, g, jsonify, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
-import email_config
+try:
+    import email_config
+except ModuleNotFoundError:
+    # Absent en production par design (voir .gitignore) : les réglages viennent
+    # alors uniquement des variables d'environnement, via parametre_email().
+    email_config = None
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "app.db"
+
+# En production, DATA_DIR pointe vers un volume persistant (ex: /data sur Railway) pour que
+# la base de données survive aux redéploiements. En local, elle reste à côté du code.
+DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DATA_DIR / "app.db"
 SECRET_KEY_PATH = BASE_DIR / "secret.key"
 
 app = Flask(__name__, static_folder="static", static_url_path="")
@@ -31,7 +41,8 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
 def parametre_email(nom):
     """Variable d'environnement en priorité (production), sinon email_config.py (local)."""
-    return os.environ.get(nom) or getattr(email_config, nom, "")
+    valeur_locale = getattr(email_config, nom, "") if email_config else ""
+    return os.environ.get(nom) or valeur_locale
 
 
 # ---------- Base de données ----------

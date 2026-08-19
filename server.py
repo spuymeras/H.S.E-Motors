@@ -1,3 +1,4 @@
+import json
 import os
 import smtplib
 import sqlite3
@@ -85,7 +86,8 @@ CREATE TABLE IF NOT EXISTS utilisateurs (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK(role IN ('admin', 'commercial', 'animateur')),
     commercial_id INTEGER REFERENCES commerciaux(id),
-    nom TEXT
+    nom TEXT,
+    kpi_order TEXT
 );
 
 CREATE TABLE IF NOT EXISTS dossiers (
@@ -119,6 +121,8 @@ def migrer_db(db):
     colonnes_utilisateurs = {row["name"] for row in db.execute("PRAGMA table_info(utilisateurs)")}
     if "nom" not in colonnes_utilisateurs:
         db.execute("ALTER TABLE utilisateurs ADD COLUMN nom TEXT")
+    if "kpi_order" not in colonnes_utilisateurs:
+        db.execute("ALTER TABLE utilisateurs ADD COLUMN kpi_order TEXT")
 
     schema_utilisateurs = db.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'utilisateurs'"
@@ -132,10 +136,11 @@ def migrer_db(db):
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('admin', 'commercial', 'animateur')),
                 commercial_id INTEGER REFERENCES commerciaux(id),
-                nom TEXT
+                nom TEXT,
+                kpi_order TEXT
             );
-            INSERT INTO utilisateurs_nouveau (id, identifiant, password_hash, role, commercial_id, nom)
-                SELECT id, identifiant, password_hash, role, commercial_id, nom FROM utilisateurs;
+            INSERT INTO utilisateurs_nouveau (id, identifiant, password_hash, role, commercial_id, nom, kpi_order)
+                SELECT id, identifiant, password_hash, role, commercial_id, nom, kpi_order FROM utilisateurs;
             DROP TABLE utilisateurs;
             ALTER TABLE utilisateurs_nouveau RENAME TO utilisateurs;
             """
@@ -256,7 +261,14 @@ def peut_tout_voir(user):
 
 def user_public(user, db):
     if user["role"] == "admin":
-        return {"id": user["id"], "role": "admin", "nom": user["nom"] or "Administrateur", "identifiant": user["identifiant"]}
+        kpi_order = json.loads(user["kpi_order"]) if user["kpi_order"] else None
+        return {
+            "id": user["id"],
+            "role": "admin",
+            "nom": user["nom"] or "Administrateur",
+            "identifiant": user["identifiant"],
+            "kpi_order": kpi_order,
+        }
     if user["role"] == "animateur":
         return {"id": user["id"], "role": "animateur", "nom": user["nom"] or "Animateur", "identifiant": user["identifiant"]}
     com = db.execute("SELECT * FROM commerciaux WHERE id = ?", (user["commercial_id"],)).fetchone()
@@ -399,6 +411,20 @@ def reinitialiser_mot_de_passe():
 @login_required
 def me():
     return jsonify(user_public(g.user, get_db()))
+
+
+@app.put("/api/preferences/kpi-order")
+@admin_required
+def sauvegarder_ordre_kpi():
+    data = request.get_json(silent=True) or {}
+    ordre = data.get("order")
+    if not isinstance(ordre, list) or not all(isinstance(x, str) for x in ordre):
+        return jsonify(error="Format d'ordre invalide"), 400
+
+    db = get_db()
+    db.execute("UPDATE utilisateurs SET kpi_order = ? WHERE id = ?", (json.dumps(ordre), g.user["id"]))
+    db.commit()
+    return jsonify(ok=True, order=ordre)
 
 
 # ---------- Routes: entreprises ----------

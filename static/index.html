@@ -66,10 +66,24 @@ export default function App() {
   const [modalCommercial, setModalCommercial] = useState(null);
   const [modalEntreprise, setModalEntreprise] = useState(null); // null | {} | entreprise existante
   const [erreur, setErreur] = useState("");
+  const [kpiOrder, setKpiOrder] = useState(null);
 
   const estAdmin = utilisateur?.role === "admin";
   const estAnimateur = utilisateur?.role === "animateur";
   const peutToutVoir = estAdmin || estAnimateur;
+
+  useEffect(() => {
+    setKpiOrder(utilisateur?.kpi_order || null);
+  }, [utilisateur?.id]);
+
+  const reorganiserKpis = async (nouvelOrdre) => {
+    setKpiOrder(nouvelOrdre);
+    try {
+      await api("/api/preferences/kpi-order", { method: "PUT", body: { order: nouvelOrdre } });
+    } catch (e) {
+      setErreur(e.message);
+    }
+  };
 
   const chargerReferentiels = useCallback(async () => {
     const [ent, com] = await Promise.all([api("/api/entreprises"), api("/api/commerciaux")]);
@@ -203,7 +217,13 @@ export default function App() {
               setMoisFiltre={setMoisFiltre}
             />
 
-            <KpiRangee dossiers={dossiersAffiches} estAdmin={peutToutVoir} />
+            <KpiRangee
+              dossiers={dossiersAffiches}
+              estAdmin={peutToutVoir}
+              peutReorganiser={estAdmin}
+              kpiOrder={kpiOrder}
+              onReorder={reorganiserKpis}
+            />
 
             <div style={styles.sectionHeader}>
               <h2 style={styles.sectionTitre}>Dossiers</h2>
@@ -641,7 +661,7 @@ function FiltrePeriode({ anneesDisponibles, anneeFiltre, setAnneeFiltre, moisFil
 
 const GARANTIE_ACHAT_NON_VENDUE = [90.15, 86.15];
 
-function KpiRangee({ dossiers, estAdmin }) {
+function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder }) {
   const chiffreAffairesHT = dossiers.reduce((s, d) => s + d.total_ht, 0);
   const caHtBrut = dossiers.reduce((s, d) => s + d.mandat_total / 1.2, 0);
   const totalCommissions = dossiers.reduce((s, d) => s + d.commission, 0);
@@ -666,25 +686,61 @@ function KpiRangee({ dossiers, estAdmin }) {
 
   const mandatMoyen = voituresVendues > 0 ? chiffreAffairesHT / voituresVendues : 0;
 
-  const kpis = [
-    { label: "CA HT net", valeur: fmtEUR(chiffreAffairesHT), icone: TrendingUp, couleur: "#E8A33D" },
-    { label: "CA HT brut", valeur: fmtEUR(caHtBrut), icone: TrendingUp, couleur: "#5B8DEF" },
-    { label: "Nombre de garanties vendues", valeur: garantiesVendues, icone: ShieldCheck, couleur: "#C58AF0" },
-    { label: "Commissions dues", valeur: fmtEUR(totalCommissions), icone: Users, couleur: "#4FD1C5" },
-    { label: "Voitures vendues", valeur: voituresVendues, icone: Car, couleur: "#8B93A1" },
-    { label: "Taux de véhicule garantis", valeur: `${tauxVehiculesGarantis.toFixed(1)}%`, icone: ShieldCheck, couleur: "#4FD1C5" },
-    { label: "CA frais d'intermédiation", valeur: fmtEUR(caFraisIntermediation), icone: TrendingUp, couleur: "#5B8DEF" },
-    { label: "CA garantie vendue", valeur: fmtEUR(caGarantieVendue), icone: ShieldCheck, couleur: "#C58AF0" },
-    { label: "Mandat moyen", valeur: fmtEUR(mandatMoyen), icone: TrendingUp, couleur: "#E8A33D" },
+  const kpisBase = [
+    { id: "ca_ht_net", label: "CA HT net", valeur: fmtEUR(chiffreAffairesHT), icone: TrendingUp, couleur: "#E8A33D" },
+    { id: "ca_ht_brut", label: "CA HT brut", valeur: fmtEUR(caHtBrut), icone: TrendingUp, couleur: "#5B8DEF" },
+    { id: "garanties_vendues", label: "Nombre de garanties vendues", valeur: garantiesVendues, icone: ShieldCheck, couleur: "#C58AF0" },
+    { id: "commissions_dues", label: "Commissions dues", valeur: fmtEUR(totalCommissions), icone: Users, couleur: "#4FD1C5" },
+    { id: "voitures_vendues", label: "Voitures vendues", valeur: voituresVendues, icone: Car, couleur: "#8B93A1" },
+    { id: "taux_garanti", label: "Taux de véhicule garantis", valeur: `${tauxVehiculesGarantis.toFixed(1)}%`, icone: ShieldCheck, couleur: "#4FD1C5" },
+    { id: "ca_frais_intermediation", label: "CA frais d'intermédiation", valeur: fmtEUR(caFraisIntermediation), icone: TrendingUp, couleur: "#5B8DEF" },
+    { id: "ca_garantie_vendue", label: "CA garantie vendue", valeur: fmtEUR(caGarantieVendue), icone: ShieldCheck, couleur: "#C58AF0" },
+    { id: "mandat_moyen", label: "Mandat moyen", valeur: fmtEUR(mandatMoyen), icone: TrendingUp, couleur: "#E8A33D" },
     ...(estAdmin
-      ? [{ label: "Achat garantie", valeur: fmtEUR(achatGarantie), icone: TrendingUp, couleur: "#8B93A1" }]
+      ? [{ id: "achat_garantie", label: "Achat garantie", valeur: fmtEUR(achatGarantie), icone: TrendingUp, couleur: "#8B93A1" }]
       : []),
   ];
 
+  const ordreVoulu = kpiOrder && kpiOrder.length ? kpiOrder : kpisBase.map((k) => k.id);
+  const parId = Object.fromEntries(kpisBase.map((k) => [k.id, k]));
+  const kpis = [
+    ...ordreVoulu.map((id) => parId[id]).filter(Boolean),
+    ...kpisBase.filter((k) => !ordreVoulu.includes(k.id)),
+  ];
+
+  const [indexGlisse, setIndexGlisse] = useState(null);
+
+  const deplacer = (indexSource, indexCible) => {
+    if (indexSource === indexCible || Number.isNaN(indexSource)) return;
+    const nouvelOrdre = kpis.map((k) => k.id);
+    const [retire] = nouvelOrdre.splice(indexSource, 1);
+    nouvelOrdre.splice(indexCible, 0, retire);
+    onReorder && onReorder(nouvelOrdre);
+  };
+
   return (
     <div style={styles.kpiRangee}>
-      {kpis.map((k) => (
-        <div key={k.label} style={styles.kpiCarte}>
+      {kpis.map((k, index) => (
+        <div
+          key={k.id}
+          style={{
+            ...styles.kpiCarte,
+            ...(peutReorganiser ? styles.kpiCarteDeplacable : {}),
+            ...(indexGlisse === index ? styles.kpiCarteEnCoursDeplacement : {}),
+          }}
+          draggable={peutReorganiser}
+          onDragStart={(e) => {
+            e.dataTransfer.setData("text/plain", String(index));
+            e.dataTransfer.effectAllowed = "move";
+            setIndexGlisse(index);
+          }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            deplacer(Number(e.dataTransfer.getData("text/plain")), index);
+          }}
+          onDragEnd={() => setIndexGlisse(null)}
+        >
           <div style={{ ...styles.kpiIcone, background: `${k.couleur}22` }}>
             <k.icone size={18} color={k.couleur} strokeWidth={2} />
           </div>
@@ -1268,6 +1324,8 @@ const styles = {
   },
   kpiRangee: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 32 },
   kpiCarte: { background: "#1C232D", border: "1px solid #2A323D", borderRadius: 12, padding: "18px 20px", display: "flex", alignItems: "center", gap: 14 },
+  kpiCarteDeplacable: { cursor: "grab", userSelect: "none" },
+  kpiCarteEnCoursDeplacement: { opacity: 0.4 },
   kpiIcone: { width: 38, height: 38, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   kpiValeur: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 20, fontWeight: 600, lineHeight: 1.2 },
   kpiLabel: { fontSize: 12.5, color: "#8B93A1", marginTop: 2 },

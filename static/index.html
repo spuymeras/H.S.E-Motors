@@ -26,7 +26,7 @@
 <script type="text/babel" data-type="module" data-presets="react">
 import React, { useState, useEffect, useCallback } from "react";
 import { createRoot } from "react-dom/client";
-import { Building2, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck } from "lucide-react";
+import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck } from "lucide-react";
 
 // ---------- API ----------
 
@@ -671,7 +671,7 @@ function KpiRangee({ dossiers, estAdmin }) {
     { label: "CA HT brut", valeur: fmtEUR(caHtBrut), icone: TrendingUp, couleur: "#5B8DEF" },
     { label: "Nombre de garanties vendues", valeur: garantiesVendues, icone: ShieldCheck, couleur: "#C58AF0" },
     { label: "Commissions dues", valeur: fmtEUR(totalCommissions), icone: Users, couleur: "#4FD1C5" },
-    { label: "Voitures vendues", valeur: voituresVendues, icone: Building2, couleur: "#8B93A1" },
+    { label: "Voitures vendues", valeur: voituresVendues, icone: Car, couleur: "#8B93A1" },
     { label: "Taux de véhicule garantis", valeur: `${tauxVehiculesGarantis.toFixed(1)}%`, icone: ShieldCheck, couleur: "#4FD1C5" },
     { label: "CA frais d'intermédiation", valeur: fmtEUR(caFraisIntermediation), icone: TrendingUp, couleur: "#5B8DEF" },
     { label: "CA garantie vendue", valeur: fmtEUR(caGarantieVendue), icone: ShieldCheck, couleur: "#C58AF0" },

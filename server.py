@@ -83,8 +83,9 @@ CREATE TABLE IF NOT EXISTS utilisateurs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     identifiant TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('admin', 'commercial')),
-    commercial_id INTEGER REFERENCES commerciaux(id)
+    role TEXT NOT NULL CHECK(role IN ('admin', 'commercial', 'animateur')),
+    commercial_id INTEGER REFERENCES commerciaux(id),
+    nom TEXT
 );
 
 CREATE TABLE IF NOT EXISTS dossiers (
@@ -114,6 +115,31 @@ def migrer_db(db):
     colonnes = {row["name"] for row in db.execute("PRAGMA table_info(dossiers)")}
     if "frais_intermediation" not in colonnes:
         db.execute("ALTER TABLE dossiers ADD COLUMN frais_intermediation REAL NOT NULL DEFAULT 0")
+
+    colonnes_utilisateurs = {row["name"] for row in db.execute("PRAGMA table_info(utilisateurs)")}
+    if "nom" not in colonnes_utilisateurs:
+        db.execute("ALTER TABLE utilisateurs ADD COLUMN nom TEXT")
+
+    schema_utilisateurs = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'utilisateurs'"
+    ).fetchone()[0]
+    if "'animateur'" not in schema_utilisateurs:
+        db.executescript(
+            """
+            CREATE TABLE utilisateurs_nouveau (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identifiant TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('admin', 'commercial', 'animateur')),
+                commercial_id INTEGER REFERENCES commerciaux(id),
+                nom TEXT
+            );
+            INSERT INTO utilisateurs_nouveau (id, identifiant, password_hash, role, commercial_id, nom)
+                SELECT id, identifiant, password_hash, role, commercial_id, nom FROM utilisateurs;
+            DROP TABLE utilisateurs;
+            ALTER TABLE utilisateurs_nouveau RENAME TO utilisateurs;
+            """
+        )
 
 
 def init_db():
@@ -210,9 +236,29 @@ def admin_required(fn):
     return wrapper
 
 
+def ecriture_requise(fn):
+    """Comme login_required, mais bloque le rôle animateur (accès lecture seule)."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user()
+        if user is None:
+            return jsonify(error="Non authentifié"), 401
+        if user["role"] == "animateur":
+            return jsonify(error="Accès en lecture seule"), 403
+        g.user = user
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+def peut_tout_voir(user):
+    return user["role"] in ("admin", "animateur")
+
+
 def user_public(user, db):
     if user["role"] == "admin":
-        return {"id": user["id"], "role": "admin", "nom": "Administrateur", "identifiant": user["identifiant"]}
+        return {"id": user["id"], "role": "admin", "nom": user["nom"] or "Administrateur", "identifiant": user["identifiant"]}
+    if user["role"] == "animateur":
+        return {"id": user["id"], "role": "animateur", "nom": user["nom"] or "Animateur", "identifiant": user["identifiant"]}
     com = db.execute("SELECT * FROM commerciaux WHERE id = ?", (user["commercial_id"],)).fetchone()
     return {
         "id": user["id"],
@@ -417,7 +463,7 @@ def commercial_dict(row):
 @login_required
 def list_commerciaux():
     db = get_db()
-    if g.user["role"] == "admin":
+    if peut_tout_voir(g.user):
         rows = db.execute("SELECT * FROM commerciaux ORDER BY nom").fetchall()
     else:
         rows = db.execute("SELECT * FROM commerciaux WHERE id = ?", (g.user["commercial_id"],)).fetchall()
@@ -497,6 +543,44 @@ def update_commercial(commercial_id):
     return jsonify(commercial_dict(row))
 
 
+# ---------- Routes: animateurs (accès lecture seule, toutes entreprises) ----------
+
+def animateur_dict(row):
+    return {"id": row["id"], "identifiant": row["identifiant"], "nom": row["nom"]}
+
+
+@app.get("/api/animateurs")
+@admin_required
+def list_animateurs():
+    db = get_db()
+    rows = db.execute("SELECT * FROM utilisateurs WHERE role = 'animateur' ORDER BY nom").fetchall()
+    return jsonify([animateur_dict(r) for r in rows])
+
+
+@app.post("/api/animateurs")
+@admin_required
+def create_animateur():
+    data = request.get_json(silent=True) or {}
+    nom = (data.get("nom") or "").strip()
+    identifiant = (data.get("identifiant") or "").strip()
+    mot_de_passe = data.get("mot_de_passe") or ""
+
+    if not nom or not identifiant or not mot_de_passe:
+        return jsonify(error="Nom, identifiant et mot de passe sont requis"), 400
+
+    db = get_db()
+    if db.execute("SELECT 1 FROM utilisateurs WHERE identifiant = ?", (identifiant,)).fetchone():
+        return jsonify(error="Cet identifiant existe déjà"), 400
+
+    cur = db.execute(
+        "INSERT INTO utilisateurs (identifiant, password_hash, role, nom) VALUES (?, ?, 'animateur', ?)",
+        (identifiant, generate_password_hash(mot_de_passe, method="pbkdf2:sha256"), nom),
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM utilisateurs WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify(animateur_dict(row)), 201
+
+
 # ---------- Routes: dossiers ----------
 
 CASH_SENTINEL = 43.20
@@ -541,7 +625,7 @@ def enrich(db, rows):
 @login_required
 def list_dossiers():
     db = get_db()
-    if g.user["role"] == "admin":
+    if peut_tout_voir(g.user):
         entreprise_id = request.args.get("entreprise_id")
         if entreprise_id and entreprise_id != "toutes":
             rows = db.execute(
@@ -570,7 +654,7 @@ def resolve_commercial_id(data):
 
 
 @app.post("/api/dossiers")
-@login_required
+@ecriture_requise
 def create_dossier():
     data = request.get_json(silent=True) or {}
     commercial_id, err = resolve_commercial_id(data)
@@ -618,7 +702,7 @@ def load_dossier_for_user(db, dossier_id):
 
 
 @app.put("/api/dossiers/<int:dossier_id>")
-@login_required
+@ecriture_requise
 def update_dossier(dossier_id):
     db = get_db()
     row = load_dossier_for_user(db, dossier_id)
@@ -652,7 +736,7 @@ def update_dossier(dossier_id):
 
 
 @app.delete("/api/dossiers/<int:dossier_id>")
-@login_required
+@ecriture_requise
 def delete_dossier(dossier_id):
     db = get_db()
     row = load_dossier_for_user(db, dossier_id)

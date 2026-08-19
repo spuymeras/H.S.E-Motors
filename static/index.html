@@ -68,6 +68,8 @@ export default function App() {
   const [erreur, setErreur] = useState("");
 
   const estAdmin = utilisateur?.role === "admin";
+  const estAnimateur = utilisateur?.role === "animateur";
+  const peutToutVoir = estAdmin || estAnimateur;
 
   const chargerReferentiels = useCallback(async () => {
     const [ent, com] = await Promise.all([api("/api/entreprises"), api("/api/commerciaux")]);
@@ -158,7 +160,7 @@ export default function App() {
           </div>
         )}
 
-        {estAdmin && (
+        {peutToutVoir && (
           <div style={styles.ongletsRangee}>
             <button
               style={{ ...styles.onglet, ...(vue === "dossiers" ? styles.ongletActif : {}) }}
@@ -177,7 +179,7 @@ export default function App() {
 
         {vue === "dossiers" && (
           <>
-            {estAdmin && (
+            {peutToutVoir && (
               <FiltreEntreprises
                 entreprises={entreprises}
                 entrepriseFiltre={entrepriseFiltre}
@@ -185,7 +187,7 @@ export default function App() {
               />
             )}
 
-            {estAdmin && (
+            {peutToutVoir && (
               <FiltreCommercial
                 commerciaux={commerciaux}
                 commercialFiltre={commercialFiltre}
@@ -201,18 +203,21 @@ export default function App() {
               setMoisFiltre={setMoisFiltre}
             />
 
-            <KpiRangee dossiers={dossiersAffiches} estAdmin={estAdmin} />
+            <KpiRangee dossiers={dossiersAffiches} estAdmin={peutToutVoir} />
 
             <div style={styles.sectionHeader}>
               <h2 style={styles.sectionTitre}>Dossiers</h2>
-              <button style={styles.boutonAjout} onClick={() => setModalDossier({})}>
-                <Plus size={16} strokeWidth={2.5} /> Nouveau dossier
-              </button>
+              {!estAnimateur && (
+                <button style={styles.boutonAjout} onClick={() => setModalDossier({})}>
+                  <Plus size={16} strokeWidth={2.5} /> Nouveau dossier
+                </button>
+              )}
             </div>
 
             <TableauVentes
               dossiers={dossiersAffiches}
-              estAdmin={estAdmin}
+              estAdmin={peutToutVoir}
+              peutModifier={!estAnimateur}
               onModifier={(d) => setModalDossier(d)}
               onSupprimer={async (d) => {
                 if (!confirm(`Supprimer le dossier de ${d.client} ?`)) return;
@@ -227,10 +232,11 @@ export default function App() {
           </>
         )}
 
-        {vue === "equipe" && estAdmin && (
+        {vue === "equipe" && peutToutVoir && (
           <EquipeEtEntreprises
             entreprises={entreprises}
             commerciaux={commerciaux}
+            estAdmin={estAdmin}
             onNouvelleEntreprise={() => setModalEntreprise({})}
             onModifierEntreprise={(e) => setModalEntreprise(e)}
             onNouveauCommercial={() => setModalCommercial({})}
@@ -533,7 +539,9 @@ function EnTete({ utilisateur, onDeconnexion }) {
         <span style={styles.enTeteTitre}>H.S.E Motors</span>
       </div>
       <div style={styles.enTeteDroite}>
-        <span style={styles.badgeRole}>{utilisateur.role === "admin" ? "Vue admin" : "Vue commercial"}</span>
+        <span style={styles.badgeRole}>
+          {utilisateur.role === "admin" ? "Vue admin" : utilisateur.role === "animateur" ? "Vue animateur" : "Vue commercial"}
+        </span>
         <span style={styles.nomUtilisateur}>{utilisateur.nom}</span>
         <button style={styles.boutonDeconnexion} onClick={onDeconnexion} title="Se déconnecter">
           <LogOut size={16} />
@@ -690,7 +698,7 @@ function KpiRangee({ dossiers, estAdmin }) {
 
 // ---------- Tableau des ventes ----------
 
-function TableauVentes({ dossiers, estAdmin, onModifier, onSupprimer }) {
+function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprimer }) {
   if (dossiers.length === 0) {
     return <div style={styles.videEtat}>Aucun dossier enregistré pour ce filtre.</div>;
   }
@@ -713,7 +721,7 @@ function TableauVentes({ dossiers, estAdmin, onModifier, onSupprimer }) {
             <th style={{ ...styles.th, textAlign: "right" }}>Cash Sentinel</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Total HT</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Commission</th>
-            <th style={styles.th}></th>
+            {peutModifier && <th style={styles.th}></th>}
           </tr>
         </thead>
         <tbody>
@@ -750,14 +758,16 @@ function TableauVentes({ dossiers, estAdmin, onModifier, onSupprimer }) {
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#4FD1C5" }}>
                 {fmtEUR(d.commission)}
               </td>
-              <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
-                <button style={styles.boutonIcone} onClick={() => onModifier(d)} title="Modifier">
-                  <Pencil size={14} />
-                </button>
-                <button style={styles.boutonIcone} onClick={() => onSupprimer(d)} title="Supprimer">
-                  <Trash2 size={14} />
-                </button>
-              </td>
+              {peutModifier && (
+                <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
+                  <button style={styles.boutonIcone} onClick={() => onModifier(d)} title="Modifier">
+                    <Pencil size={14} />
+                  </button>
+                  <button style={styles.boutonIcone} onClick={() => onSupprimer(d)} title="Supprimer">
+                    <Trash2 size={14} />
+                  </button>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
@@ -891,32 +901,46 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
 
 // ---------- Équipe & entreprises (admin) ----------
 
-function EquipeEtEntreprises({ entreprises, commerciaux, onNouvelleEntreprise, onModifierEntreprise, onNouveauCommercial, onModifierCommercial }) {
+function EquipeEtEntreprises({
+  entreprises, commerciaux, estAdmin,
+  onNouvelleEntreprise, onModifierEntreprise, onNouveauCommercial, onModifierCommercial,
+}) {
   const nomEntreprise = (id) => entreprises.find((e) => e.id === id)?.nom || "—";
 
   return (
     <div>
       <div style={styles.sectionHeader}>
         <h2 style={styles.sectionTitre}>Entreprises ({entreprises.length}/5)</h2>
-        <button style={styles.boutonAjout} disabled={entreprises.length >= 5} onClick={onNouvelleEntreprise}>
-          <Plus size={16} strokeWidth={2.5} /> Nouvelle entreprise
-        </button>
+        {estAdmin && (
+          <button style={styles.boutonAjout} disabled={entreprises.length >= 5} onClick={onNouvelleEntreprise}>
+            <Plus size={16} strokeWidth={2.5} /> Nouvelle entreprise
+          </button>
+        )}
       </div>
       <div style={styles.cartesEntreprises}>
-        {entreprises.map((e) => (
-          <button key={e.id} style={styles.carteEntreprise} onClick={() => onModifierEntreprise(e)} title="Modifier">
-            <span style={{ ...styles.puceCouleur, background: e.couleur, width: 10, height: 10 }} />
-            {e.nom}
-            <Pencil size={12} style={{ marginLeft: 4, opacity: 0.6 }} />
-          </button>
-        ))}
+        {entreprises.map((e) =>
+          estAdmin ? (
+            <button key={e.id} style={styles.carteEntreprise} onClick={() => onModifierEntreprise(e)} title="Modifier">
+              <span style={{ ...styles.puceCouleur, background: e.couleur, width: 10, height: 10 }} />
+              {e.nom}
+              <Pencil size={12} style={{ marginLeft: 4, opacity: 0.6 }} />
+            </button>
+          ) : (
+            <div key={e.id} style={styles.carteEntreprise}>
+              <span style={{ ...styles.puceCouleur, background: e.couleur, width: 10, height: 10 }} />
+              {e.nom}
+            </div>
+          )
+        )}
       </div>
 
       <div style={{ ...styles.sectionHeader, marginTop: 32 }}>
         <h2 style={styles.sectionTitre}>Commerciaux</h2>
-        <button style={styles.boutonAjout} onClick={onNouveauCommercial}>
-          <Plus size={16} strokeWidth={2.5} /> Nouveau commercial
-        </button>
+        {estAdmin && (
+          <button style={styles.boutonAjout} onClick={onNouveauCommercial}>
+            <Plus size={16} strokeWidth={2.5} /> Nouveau commercial
+          </button>
+        )}
       </div>
       <div style={styles.tableauConteneur}>
         <table style={styles.tableau}>
@@ -926,7 +950,7 @@ function EquipeEtEntreprises({ entreprises, commerciaux, onNouvelleEntreprise, o
               <th style={styles.th}>Entreprise</th>
               <th style={{ ...styles.th, textAlign: "right" }}>Taux de commission</th>
               <th style={styles.th}>Statut</th>
-              <th style={styles.th}></th>
+              {estAdmin && <th style={styles.th}></th>}
             </tr>
           </thead>
           <tbody>
@@ -938,15 +962,122 @@ function EquipeEtEntreprises({ entreprises, commerciaux, onNouvelleEntreprise, o
                 <td style={styles.td}>
                   <span style={{ color: c.actif ? "#4FD1C5" : "#8B93A1" }}>{c.actif ? "Actif" : "Désactivé"}</span>
                 </td>
-                <td style={styles.td}>
-                  <button style={styles.boutonIcone} onClick={() => onModifierCommercial(c)} title="Modifier">
-                    <Pencil size={14} />
-                  </button>
-                </td>
+                {estAdmin && (
+                  <td style={styles.td}>
+                    <button style={styles.boutonIcone} onClick={() => onModifierCommercial(c)} title="Modifier">
+                      <Pencil size={14} />
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
         </table>
+      </div>
+
+      {estAdmin && <ComptesAnimateur />}
+    </div>
+  );
+}
+
+function ComptesAnimateur() {
+  const [animateurs, setAnimateurs] = useState([]);
+  const [modalOuverte, setModalOuverte] = useState(false);
+  const [erreur, setErreur] = useState("");
+
+  useEffect(() => {
+    api("/api/animateurs").then(setAnimateurs).catch((e) => setErreur(e.message));
+  }, []);
+
+  return (
+    <div>
+      <div style={{ ...styles.sectionHeader, marginTop: 32 }}>
+        <h2 style={styles.sectionTitre}>Comptes animateur (lecture seule)</h2>
+        <button style={styles.boutonAjout} onClick={() => setModalOuverte(true)}>
+          <Plus size={16} strokeWidth={2.5} /> Nouvel animateur
+        </button>
+      </div>
+
+      {erreur && <div style={styles.bandeauErreur}>{erreur}</div>}
+
+      {animateurs.length === 0 ? (
+        <div style={styles.videEtat}>Aucun compte animateur pour l'instant.</div>
+      ) : (
+        <div style={styles.tableauConteneur}>
+          <table style={styles.tableau}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Nom</th>
+                <th style={styles.th}>Identifiant</th>
+              </tr>
+            </thead>
+            <tbody>
+              {animateurs.map((a) => (
+                <tr key={a.id} style={styles.tr}>
+                  <td style={styles.td}>{a.nom}</td>
+                  <td style={styles.td}>{a.identifiant}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {modalOuverte && (
+        <ModalAnimateur
+          onFermer={() => setModalOuverte(false)}
+          onValider={async (payload) => {
+            try {
+              const nouveau = await api("/api/animateurs", { method: "POST", body: payload });
+              setAnimateurs((prev) => [...prev, nouveau]);
+              setModalOuverte(false);
+            } catch (e) {
+              setErreur(e.message);
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ModalAnimateur({ onFermer, onValider }) {
+  const [nom, setNom] = useState("");
+  const [identifiant, setIdentifiant] = useState("");
+  const [motDePasse, setMotDePasse] = useState("");
+
+  const valide = nom.trim() !== "" && identifiant.trim() !== "" && motDePasse.trim() !== "";
+
+  return (
+    <div style={styles.modalFond} onClick={onFermer}>
+      <div style={styles.modalCarte} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalEnTete}>
+          <h3 style={styles.modalTitre}>Nouveau compte animateur</h3>
+          <button style={styles.modalFermer} onClick={onFermer}><X size={18} /></button>
+        </div>
+
+        <label style={styles.champLabel}>
+          Nom
+          <input style={styles.input} value={nom} onChange={(e) => setNom(e.target.value)} placeholder="Nom complet" />
+        </label>
+
+        <label style={styles.champLabel}>
+          Identifiant de connexion
+          <input style={styles.input} value={identifiant} onChange={(e) => setIdentifiant(e.target.value)} placeholder="prenom.nom" />
+        </label>
+
+        <label style={styles.champLabel}>
+          Mot de passe initial
+          <input style={styles.input} type="password" value={motDePasse} onChange={(e) => setMotDePasse(e.target.value)} placeholder="••••••••" />
+        </label>
+
+        <button
+          style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}
+          disabled={!valide}
+          onClick={() => valide && onValider({ nom, identifiant, mot_de_passe: motDePasse })}
+        >
+          Créer le compte
+        </button>
       </div>
     </div>
   );

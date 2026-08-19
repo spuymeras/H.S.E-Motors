@@ -1,0 +1,28 @@
+# Configuration d'envoi d'email pour la récupération du mot de passe admin.
+#
+# EN LOCAL : copiez ce fichier en "email_config.py" et remplissez les valeurs.
+# EN PRODUCTION : ne pas copier ce fichier — définissez plutôt les variables
+# d'environnement SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD et
+# ADMIN_RECOVERY_EMAIL dans le tableau de bord de l'hébergeur. Le serveur les
+# utilisera automatiquement à la place de ce fichier.
+#
+# Pour Gmail / Google Workspace :
+#   1. Activez la validation en 2 étapes sur le compte Google qui enverra les emails
+#      (myaccount.google.com/security).
+#   2. Générez un "mot de passe d'application" : myaccount.google.com/apppasswords
+#      (choisissez "Autre", nommez-le par ex. "HSE Motors") -> Google vous donne
+#      un code à 16 caractères. C'est CE code qu'il faut mettre ci-dessous,
+#      PAS votre mot de passe Google habituel.
+
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+
+# L'adresse Gmail qui enverra les emails de récupération.
+SMTP_USER = ""
+
+# Le mot de passe d'application à 16 caractères généré à l'étape 2 ci-dessus.
+SMTP_PASSWORD = ""
+
+# L'adresse qui recevra les codes de récupération pour le compte admin.
+# Peut être la même que SMTP_USER, ou une autre adresse (ex: celle du gérant).
+ADMIN_RECOVERY_EMAIL = ""

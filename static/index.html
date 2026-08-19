@@ -1,0 +1,1193 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>H.S.E Motors — Centralisation multi-entreprises</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; background: #14171C; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "lucide-react": "https://esm.sh/lucide-react@0.454.0?external=react"
+  }
+}
+</script>
+<script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-type="module" data-presets="react">
+import React, { useState, useEffect, useCallback } from "react";
+import { createRoot } from "react-dom/client";
+import { Building2, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck } from "lucide-react";
+
+// ---------- API ----------
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    method: options.method || "GET",
+    headers: options.body ? { "Content-Type": "application/json" } : undefined,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+    credentials: "same-origin",
+  });
+  const isJson = res.headers.get("content-type")?.includes("application/json");
+  const data = isJson ? await res.json() : null;
+  if (!res.ok) {
+    throw new Error((data && data.error) || `Erreur ${res.status}`);
+  }
+  return data;
+}
+
+const fmtEUR = (n) =>
+  new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(n || 0);
+
+// ---------- App ----------
+
+export default function App() {
+  const [chargement, setChargement] = useState(true);
+  const [utilisateur, setUtilisateur] = useState(null);
+  const [entreprises, setEntreprises] = useState([]);
+  const [commerciaux, setCommerciaux] = useState([]);
+  const [dossiers, setDossiers] = useState([]);
+  const [dossiersTous, setDossiersTous] = useState([]);
+  const [entrepriseFiltre, setEntrepriseFiltre] = useState("toutes");
+  const [commercialFiltre, setCommercialFiltre] = useState("tous");
+  const [anneeFiltre, setAnneeFiltre] = useState("toutes");
+  const [moisFiltre, setMoisFiltre] = useState("tous");
+  const [vue, setVue] = useState("dossiers");
+  const [modalDossier, setModalDossier] = useState(null); // null | {} | dossier existant
+  const [modalCommercial, setModalCommercial] = useState(null);
+  const [modalEntreprise, setModalEntreprise] = useState(null); // null | {} | entreprise existante
+  const [erreur, setErreur] = useState("");
+
+  const estAdmin = utilisateur?.role === "admin";
+
+  const chargerReferentiels = useCallback(async () => {
+    const [ent, com] = await Promise.all([api("/api/entreprises"), api("/api/commerciaux")]);
+    setEntreprises(ent);
+    setCommerciaux(com);
+  }, []);
+
+  const chargerDossiers = useCallback(async (filtre) => {
+    const qs = filtre && filtre !== "toutes" ? `?entreprise_id=${filtre}` : "";
+    const rows = await api(`/api/dossiers${qs}`);
+    setDossiers(rows);
+  }, []);
+
+  const chargerDossiersTous = useCallback(async () => {
+    const rows = await api("/api/dossiers");
+    setDossiersTous(rows);
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const me = await api("/api/me");
+        setUtilisateur(me);
+        await Promise.all([chargerReferentiels(), chargerDossiers("toutes"), chargerDossiersTous()]);
+      } catch {
+        setUtilisateur(null);
+      } finally {
+        setChargement(false);
+      }
+    })();
+  }, [chargerReferentiels, chargerDossiers, chargerDossiersTous]);
+
+  useEffect(() => {
+    if (utilisateur) chargerDossiers(entrepriseFiltre);
+  }, [entrepriseFiltre, utilisateur, chargerDossiers]);
+
+  const handleConnexion = async (me) => {
+    setUtilisateur(me);
+    setChargement(true);
+    try {
+      await Promise.all([chargerReferentiels(), chargerDossiers("toutes"), chargerDossiersTous()]);
+    } finally {
+      setChargement(false);
+    }
+  };
+
+  const handleDeconnexion = async () => {
+    await api("/api/logout", { method: "POST" });
+    setUtilisateur(null);
+    setEntreprises([]);
+    setCommerciaux([]);
+    setDossiers([]);
+    setDossiersTous([]);
+    setVue("dossiers");
+  };
+
+  const rafraichir = async () => {
+    await Promise.all([chargerReferentiels(), chargerDossiers(entrepriseFiltre), chargerDossiersTous()]);
+  };
+
+  if (chargement) {
+    return <div style={styles.pageChargement}>Chargement…</div>;
+  }
+
+  if (!utilisateur) {
+    return <EcranConnexion onConnexion={handleConnexion} />;
+  }
+
+  const anneesDisponibles = [...new Set(dossiersTous.map((d) => d.date.slice(0, 4)))].sort((a, b) => b.localeCompare(a));
+
+  const dossiersAffiches = dossiers.filter((d) => {
+    if (commercialFiltre !== "tous" && String(d.commercial_id) !== commercialFiltre) return false;
+    if (anneeFiltre !== "toutes" && d.date.slice(0, 4) !== anneeFiltre) return false;
+    if (moisFiltre !== "tous" && d.date.slice(5, 7) !== moisFiltre) return false;
+    return true;
+  });
+
+  return (
+    <div style={styles.page}>
+      <TickerBandeau entreprises={entreprises} dossiers={dossiersTous} />
+      <EnTete utilisateur={utilisateur} onDeconnexion={handleDeconnexion} />
+
+      <div style={styles.corps}>
+        {erreur && (
+          <div style={styles.bandeauErreur}>
+            {erreur}
+            <button style={styles.fermerErreur} onClick={() => setErreur("")}><X size={14} /></button>
+          </div>
+        )}
+
+        {estAdmin && (
+          <div style={styles.ongletsRangee}>
+            <button
+              style={{ ...styles.onglet, ...(vue === "dossiers" ? styles.ongletActif : {}) }}
+              onClick={() => setVue("dossiers")}
+            >
+              Dossiers
+            </button>
+            <button
+              style={{ ...styles.onglet, ...(vue === "equipe" ? styles.ongletActif : {}) }}
+              onClick={() => setVue("equipe")}
+            >
+              Équipe &amp; entreprises
+            </button>
+          </div>
+        )}
+
+        {vue === "dossiers" && (
+          <>
+            {estAdmin && (
+              <FiltreEntreprises
+                entreprises={entreprises}
+                entrepriseFiltre={entrepriseFiltre}
+                setEntrepriseFiltre={setEntrepriseFiltre}
+              />
+            )}
+
+            {estAdmin && (
+              <FiltreCommercial
+                commerciaux={commerciaux}
+                commercialFiltre={commercialFiltre}
+                setCommercialFiltre={setCommercialFiltre}
+              />
+            )}
+
+            <FiltrePeriode
+              anneesDisponibles={anneesDisponibles}
+              anneeFiltre={anneeFiltre}
+              setAnneeFiltre={setAnneeFiltre}
+              moisFiltre={moisFiltre}
+              setMoisFiltre={setMoisFiltre}
+            />
+
+            <KpiRangee dossiers={dossiersAffiches} estAdmin={estAdmin} />
+
+            <div style={styles.sectionHeader}>
+              <h2 style={styles.sectionTitre}>Dossiers</h2>
+              <button style={styles.boutonAjout} onClick={() => setModalDossier({})}>
+                <Plus size={16} strokeWidth={2.5} /> Nouveau dossier
+              </button>
+            </div>
+
+            <TableauVentes
+              dossiers={dossiersAffiches}
+              estAdmin={estAdmin}
+              onModifier={(d) => setModalDossier(d)}
+              onSupprimer={async (d) => {
+                if (!confirm(`Supprimer le dossier de ${d.client} ?`)) return;
+                try {
+                  await api(`/api/dossiers/${d.id}`, { method: "DELETE" });
+                  await rafraichir();
+                } catch (e) {
+                  setErreur(e.message);
+                }
+              }}
+            />
+          </>
+        )}
+
+        {vue === "equipe" && estAdmin && (
+          <EquipeEtEntreprises
+            entreprises={entreprises}
+            commerciaux={commerciaux}
+            onNouvelleEntreprise={() => setModalEntreprise({})}
+            onModifierEntreprise={(e) => setModalEntreprise(e)}
+            onNouveauCommercial={() => setModalCommercial({})}
+            onModifierCommercial={(c) => setModalCommercial(c)}
+          />
+        )}
+      </div>
+
+      {modalDossier && (
+        <ModalDossier
+          dossier={modalDossier}
+          estAdmin={estAdmin}
+          commerciaux={commerciaux}
+          utilisateur={utilisateur}
+          onFermer={() => setModalDossier(null)}
+          onValider={async (payload) => {
+            try {
+              if (payload.id) {
+                await api(`/api/dossiers/${payload.id}`, { method: "PUT", body: payload });
+              } else {
+                await api("/api/dossiers", { method: "POST", body: payload });
+              }
+              setModalDossier(null);
+              await rafraichir();
+            } catch (e) {
+              setErreur(e.message);
+            }
+          }}
+        />
+      )}
+
+      {modalCommercial && (
+        <ModalCommercial
+          commercial={modalCommercial}
+          entreprises={entreprises}
+          onFermer={() => setModalCommercial(null)}
+          onValider={async (payload) => {
+            try {
+              if (payload.id) {
+                await api(`/api/commerciaux/${payload.id}`, { method: "PUT", body: payload });
+              } else {
+                await api("/api/commerciaux", { method: "POST", body: payload });
+              }
+              setModalCommercial(null);
+              await rafraichir();
+            } catch (e) {
+              setErreur(e.message);
+            }
+          }}
+        />
+      )}
+
+      {modalEntreprise && (
+        <ModalEntreprise
+          entreprise={modalEntreprise}
+          onFermer={() => setModalEntreprise(null)}
+          onValider={async (payload) => {
+            try {
+              if (payload.id) {
+                await api(`/api/entreprises/${payload.id}`, { method: "PUT", body: payload });
+              } else {
+                await api("/api/entreprises", { method: "POST", body: payload });
+              }
+              setModalEntreprise(null);
+              await rafraichir();
+            } catch (e) {
+              setErreur(e.message);
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------- Écran de connexion ----------
+
+function EcranConnexion({ onConnexion }) {
+  const [mode, setMode] = useState("connexion"); // connexion | recuperation
+  const [identifiant, setIdentifiant] = useState("");
+  const [motDePasse, setMotDePasse] = useState("");
+  const [erreur, setErreur] = useState("");
+  const [enCours, setEnCours] = useState(false);
+
+  const connecter = async (e) => {
+    e.preventDefault();
+    setErreur("");
+    setEnCours(true);
+    try {
+      const me = await api("/api/login", { method: "POST", body: { identifiant, mot_de_passe: motDePasse } });
+      onConnexion(me);
+    } catch (err) {
+      setErreur(err.message);
+    } finally {
+      setEnCours(false);
+    }
+  };
+
+  return (
+    <div style={styles.pageConnexion}>
+      {mode === "connexion" ? (
+        <form style={styles.carteConnexion} onSubmit={connecter}>
+          <div style={styles.logoConnexion}>
+            <img src="/logo.png" alt="H.S.E Motors" style={styles.logoImage} />
+          </div>
+          <p style={styles.sousTitreConnexion}>Connectez-vous à votre espace</p>
+
+          <label style={styles.champLabel}>
+            Identifiant
+            <input
+              style={styles.input}
+              value={identifiant}
+              onChange={(e) => setIdentifiant(e.target.value)}
+              placeholder="ex: admin"
+              autoFocus
+            />
+          </label>
+
+          <label style={styles.champLabel}>
+            Mot de passe
+            <input
+              style={styles.input}
+              type="password"
+              value={motDePasse}
+              onChange={(e) => setMotDePasse(e.target.value)}
+              placeholder="••••••••"
+            />
+          </label>
+
+          {erreur && <div style={styles.erreurConnexion}>{erreur}</div>}
+
+          <button style={{ ...styles.boutonConnexion, opacity: enCours ? 0.6 : 1 }} disabled={enCours} type="submit">
+            {enCours ? "Connexion…" : "Entrer"}
+          </button>
+
+          <button
+            type="button"
+            style={styles.lienMotDePasseOublie}
+            onClick={() => { setMode("recuperation"); setErreur(""); }}
+          >
+            Mot de passe oublié ?
+          </button>
+        </form>
+      ) : (
+        <RecuperationMotDePasse onRetour={() => setMode("connexion")} />
+      )}
+    </div>
+  );
+}
+
+// ---------- Récupération mot de passe admin ----------
+
+function RecuperationMotDePasse({ onRetour }) {
+  const [etape, setEtape] = useState("demande"); // demande | saisie
+  const [identifiant, setIdentifiant] = useState("admin");
+  const [code, setCode] = useState("");
+  const [nouveauMotDePasse, setNouveauMotDePasse] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [erreur, setErreur] = useState("");
+  const [message, setMessage] = useState("");
+  const [enCours, setEnCours] = useState(false);
+
+  const demanderCode = async (e) => {
+    e.preventDefault();
+    setErreur("");
+    setEnCours(true);
+    try {
+      const res = await api("/api/mot-de-passe-oublie", { method: "POST", body: { identifiant } });
+      setMessage(res.message);
+      setEtape("saisie");
+    } catch (err) {
+      setErreur(err.message);
+    } finally {
+      setEnCours(false);
+    }
+  };
+
+  const reinitialiser = async (e) => {
+    e.preventDefault();
+    setErreur("");
+    if (nouveauMotDePasse !== confirmation) {
+      setErreur("Les deux mots de passe ne correspondent pas.");
+      return;
+    }
+    setEnCours(true);
+    try {
+      await api("/api/reinitialiser-mot-de-passe", {
+        method: "POST",
+        body: { identifiant, code, nouveau_mot_de_passe: nouveauMotDePasse },
+      });
+      setMessage("Mot de passe réinitialisé. Vous pouvez vous reconnecter.");
+      setTimeout(onRetour, 1500);
+    } catch (err) {
+      setErreur(err.message);
+    } finally {
+      setEnCours(false);
+    }
+  };
+
+  return (
+    <form style={styles.carteConnexion} onSubmit={etape === "demande" ? demanderCode : reinitialiser}>
+      <div style={styles.logoConnexion}>
+        <img src="/logo.png" alt="H.S.E Motors" style={styles.logoImage} />
+      </div>
+      <p style={styles.sousTitreConnexion}>
+        {etape === "demande" ? "Récupération du mot de passe admin" : "Entrez le code reçu par email"}
+      </p>
+
+      <label style={styles.champLabel}>
+        Identifiant
+        <input
+          style={styles.input}
+          value={identifiant}
+          onChange={(e) => setIdentifiant(e.target.value)}
+          placeholder="admin"
+          disabled={etape === "saisie"}
+        />
+      </label>
+
+      {etape === "saisie" && (
+        <>
+          <label style={styles.champLabel}>
+            Code reçu par email
+            <input
+              style={styles.input}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="123456"
+              autoFocus
+            />
+          </label>
+          <label style={styles.champLabel}>
+            Nouveau mot de passe
+            <input
+              style={styles.input}
+              type="password"
+              value={nouveauMotDePasse}
+              onChange={(e) => setNouveauMotDePasse(e.target.value)}
+              placeholder="••••••••"
+            />
+          </label>
+          <label style={styles.champLabel}>
+            Confirmer le mot de passe
+            <input
+              style={styles.input}
+              type="password"
+              value={confirmation}
+              onChange={(e) => setConfirmation(e.target.value)}
+              placeholder="••••••••"
+            />
+          </label>
+        </>
+      )}
+
+      {message && <div style={styles.messageConnexion}>{message}</div>}
+      {erreur && <div style={styles.erreurConnexion}>{erreur}</div>}
+
+      <button style={{ ...styles.boutonConnexion, opacity: enCours ? 0.6 : 1 }} disabled={enCours} type="submit">
+        {etape === "demande" ? (enCours ? "Envoi…" : "Envoyer le code") : (enCours ? "Réinitialisation…" : "Réinitialiser le mot de passe")}
+      </button>
+
+      <button type="button" style={styles.lienMotDePasseOublie} onClick={onRetour}>
+        Retour à la connexion
+      </button>
+    </form>
+  );
+}
+
+// ---------- Ticker ----------
+
+function TickerBandeau({ entreprises, dossiers }) {
+  const items = entreprises.map((ent) => {
+    const total = dossiers.filter((d) => d.entreprise_id === ent.id).reduce((s, d) => s + d.mandat_total, 0);
+    return { ...ent, total };
+  });
+
+  if (items.length === 0) return <div style={styles.ticker} />;
+
+  return (
+    <div style={styles.ticker}>
+      <div style={styles.tickerContenu}>
+        {items.map((it, i) => (
+          <span key={i} style={styles.tickerItem}>
+            <span style={{ ...styles.tickerPuce, background: it.couleur }} />
+            {it.nom} <strong style={{ color: it.couleur, fontFamily: "'IBM Plex Mono', monospace" }}>{fmtEUR(it.total)}</strong>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- En-tête ----------
+
+function EnTete({ utilisateur, onDeconnexion }) {
+  return (
+    <header style={styles.enTete}>
+      <div style={styles.enTeteGauche}>
+        <img src="/logo-icon.png" alt="H.S.E Motors" style={styles.enTeteLogo} />
+        <span style={styles.enTeteTitre}>H.S.E Motors</span>
+      </div>
+      <div style={styles.enTeteDroite}>
+        <span style={styles.badgeRole}>{utilisateur.role === "admin" ? "Vue admin" : "Vue commercial"}</span>
+        <span style={styles.nomUtilisateur}>{utilisateur.nom}</span>
+        <button style={styles.boutonDeconnexion} onClick={onDeconnexion} title="Se déconnecter">
+          <LogOut size={16} />
+        </button>
+      </div>
+    </header>
+  );
+}
+
+// ---------- Filtre entreprises ----------
+
+function FiltreEntreprises({ entreprises, entrepriseFiltre, setEntrepriseFiltre }) {
+  return (
+    <div style={styles.filtreRangee}>
+      <button
+        style={{ ...styles.puceFiltre, ...(entrepriseFiltre === "toutes" ? styles.puceFiltreActive : {}) }}
+        onClick={() => setEntrepriseFiltre("toutes")}
+      >
+        Toutes les entreprises
+      </button>
+      {entreprises.map((ent) => (
+        <button
+          key={ent.id}
+          style={{
+            ...styles.puceFiltre,
+            ...(entrepriseFiltre === String(ent.id) || entrepriseFiltre === ent.id
+              ? { ...styles.puceFiltreActive, borderColor: ent.couleur }
+              : {}),
+          }}
+          onClick={() => setEntrepriseFiltre(ent.id)}
+        >
+          <span style={{ ...styles.puceCouleur, background: ent.couleur }} />
+          {ent.nom}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ---------- Filtre commercial ----------
+
+function FiltreCommercial({ commerciaux, commercialFiltre, setCommercialFiltre }) {
+  return (
+    <div style={styles.filtreRangee}>
+      <select
+        style={styles.selectFiltre}
+        value={commercialFiltre}
+        onChange={(e) => setCommercialFiltre(e.target.value)}
+      >
+        <option value="tous">Tous les commerciaux</option>
+        {commerciaux.map((c) => (
+          <option key={c.id} value={String(c.id)}>{c.nom}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+// ---------- Filtre période (année / mois) ----------
+
+const MOIS = [
+  { valeur: "01", label: "Janvier" }, { valeur: "02", label: "Février" }, { valeur: "03", label: "Mars" },
+  { valeur: "04", label: "Avril" }, { valeur: "05", label: "Mai" }, { valeur: "06", label: "Juin" },
+  { valeur: "07", label: "Juillet" }, { valeur: "08", label: "Août" }, { valeur: "09", label: "Septembre" },
+  { valeur: "10", label: "Octobre" }, { valeur: "11", label: "Novembre" }, { valeur: "12", label: "Décembre" },
+];
+
+function FiltrePeriode({ anneesDisponibles, anneeFiltre, setAnneeFiltre, moisFiltre, setMoisFiltre }) {
+  return (
+    <div style={styles.filtreRangee}>
+      <select
+        style={styles.selectFiltre}
+        value={anneeFiltre}
+        onChange={(e) => setAnneeFiltre(e.target.value)}
+      >
+        <option value="toutes">Toutes les années</option>
+        {anneesDisponibles.map((a) => (
+          <option key={a} value={a}>{a}</option>
+        ))}
+      </select>
+
+      <select
+        style={styles.selectFiltre}
+        value={moisFiltre}
+        onChange={(e) => setMoisFiltre(e.target.value)}
+      >
+        <option value="tous">Tous les mois</option>
+        {MOIS.map((m) => (
+          <option key={m.valeur} value={m.valeur}>{m.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+// ---------- KPI ----------
+
+const GARANTIE_ACHAT_NON_VENDUE = [90.15, 86.15];
+
+function KpiRangee({ dossiers, estAdmin }) {
+  const chiffreAffairesHT = dossiers.reduce((s, d) => s + d.total_ht, 0);
+  const totalCommissions = dossiers.reduce((s, d) => s + d.commission, 0);
+  const caFraisIntermediation = dossiers.reduce((s, d) => s + d.frais_intermediation, 0);
+  const voituresVendues = dossiers.length;
+
+  // Véhicule non garantissable (garantie achat = 0€) : exclu uniquement du nombre
+  // de garanties vendues et du taux de véhicule garantis.
+  const garantiesVendues = dossiers.filter(
+    (d) =>
+      Math.abs(d.garantie_achat) > 0.001 &&
+      !GARANTIE_ACHAT_NON_VENDUE.some((v) => Math.abs(d.garantie_achat - v) < 0.001)
+  ).length;
+  const tauxVehiculesGarantis = voituresVendues > 0 ? (garantiesVendues / voituresVendues) * 100 : 0;
+
+  const achatGarantie = dossiers.reduce((s, d) => s + d.garantie_achat, 0);
+
+  // Garantie vendu à 0€ : pas de garantie vendue sur ce dossier, on l'ignore.
+  const caGarantieVendue = dossiers
+    .filter((d) => Math.abs(d.garantie_prix_vendu) > 0.001)
+    .reduce((s, d) => s + (d.garantie_prix_vendu - d.garantie_achat), 0);
+
+  const mandatMoyen = voituresVendues > 0 ? chiffreAffairesHT / voituresVendues : 0;
+
+  const kpis = [
+    { label: "Chiffre d'affaires HT", valeur: fmtEUR(chiffreAffairesHT), icone: TrendingUp, couleur: "#E8A33D" },
+    { label: "Nombre de garanties vendues", valeur: garantiesVendues, icone: ShieldCheck, couleur: "#C58AF0" },
+    { label: "Commissions dues", valeur: fmtEUR(totalCommissions), icone: Users, couleur: "#4FD1C5" },
+    { label: "Voitures vendues", valeur: voituresVendues, icone: Building2, couleur: "#8B93A1" },
+    { label: "Taux de véhicule garantis", valeur: `${tauxVehiculesGarantis.toFixed(1)}%`, icone: ShieldCheck, couleur: "#4FD1C5" },
+    { label: "CA frais d'intermédiation", valeur: fmtEUR(caFraisIntermediation), icone: TrendingUp, couleur: "#5B8DEF" },
+    { label: "CA garantie vendue", valeur: fmtEUR(caGarantieVendue), icone: ShieldCheck, couleur: "#C58AF0" },
+    { label: "Mandat moyen", valeur: fmtEUR(mandatMoyen), icone: TrendingUp, couleur: "#E8A33D" },
+    ...(estAdmin
+      ? [{ label: "Achat garantie", valeur: fmtEUR(achatGarantie), icone: TrendingUp, couleur: "#8B93A1" }]
+      : []),
+  ];
+
+  return (
+    <div style={styles.kpiRangee}>
+      {kpis.map((k) => (
+        <div key={k.label} style={styles.kpiCarte}>
+          <div style={{ ...styles.kpiIcone, background: `${k.couleur}22` }}>
+            <k.icone size={18} color={k.couleur} strokeWidth={2} />
+          </div>
+          <div>
+            <div style={styles.kpiValeur}>{k.valeur}</div>
+            <div style={styles.kpiLabel}>{k.label}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------- Tableau des ventes ----------
+
+function TableauVentes({ dossiers, estAdmin, onModifier, onSupprimer }) {
+  if (dossiers.length === 0) {
+    return <div style={styles.videEtat}>Aucun dossier enregistré pour ce filtre.</div>;
+  }
+
+  return (
+    <div style={styles.tableauConteneur}>
+      <table style={styles.tableau}>
+        <thead>
+          <tr>
+            <th style={{ ...styles.th, ...styles.colFigeDate }}>Date</th>
+            <th style={{ ...styles.th, ...styles.colFigeClient }}>Client</th>
+            <th style={{ ...styles.th, ...styles.colFigeVehicule }}>Véhicule</th>
+            {estAdmin && <th style={styles.th}>Commercial</th>}
+            {estAdmin && <th style={styles.th}>Entreprise</th>}
+            <th style={{ ...styles.th, textAlign: "right" }}>Mandat total TTC</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Frais d'intermédiation</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Gar. achat</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Gar. vendu</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>TCA (18%)</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Cash Sentinel</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Total HT</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Commission</th>
+            <th style={styles.th}></th>
+          </tr>
+        </thead>
+        <tbody>
+          {dossiers.map((d) => (
+            <tr key={d.id} style={styles.tr}>
+              <td style={{ ...styles.td, ...styles.colFigeDate }}>{new Date(d.date).toLocaleDateString("fr-FR")}</td>
+              <td style={{ ...styles.td, ...styles.colFigeClient }}>{d.client}</td>
+              <td style={{ ...styles.td, ...styles.colFigeVehicule }}>
+                <div>{d.voiture}</div>
+                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "#8B93A1" }}>
+                  {d.plaque}
+                </div>
+              </td>
+              {estAdmin && <td style={styles.td}>{d.commercial_nom}</td>}
+              {estAdmin && (
+                <td style={styles.td}>
+                  <span style={styles.puceEntreprise}>
+                    <span style={{ ...styles.puceCouleur, background: d.entreprise_couleur }} />
+                    {d.entreprise_nom}
+                  </span>
+                </td>
+              )}
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8A33D" }}>
+                {fmtEUR(d.mandat_total)}
+              </td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.frais_intermediation)}</td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.garantie_achat)}</td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.garantie_prix_vendu)}</td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#C58AF0" }}>{fmtEUR(d.tca)}</td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8746B" }}>
+                -{fmtEUR(d.cash_sentinel)}
+              </td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.total_ht)}</td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#4FD1C5" }}>
+                {fmtEUR(d.commission)}
+              </td>
+              <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
+                <button style={styles.boutonIcone} onClick={() => onModifier(d)} title="Modifier">
+                  <Pencil size={14} />
+                </button>
+                <button style={styles.boutonIcone} onClick={() => onSupprimer(d)} title="Supprimer">
+                  <Trash2 size={14} />
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---------- Modale dossier (création / édition) ----------
+
+function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, onValider }) {
+  const estEdition = Boolean(dossier.id);
+  const [commercialId, setCommercialId] = useState(
+    dossier.commercial_id || (estAdmin ? commerciaux[0]?.id : utilisateur.commercial_id)
+  );
+  const [client, setClient] = useState(dossier.client || "");
+  const [voiture, setVoiture] = useState(dossier.voiture || "");
+  const [plaque, setPlaque] = useState(dossier.plaque || "");
+  const [garantieAchat, setGarantieAchat] = useState(dossier.garantie_achat ?? "");
+  const [garantiePrixVendu, setGarantiePrixVendu] = useState(dossier.garantie_prix_vendu ?? "");
+  const [mandatTotal, setMandatTotal] = useState(dossier.mandat_total ?? "");
+  const [fraisIntermediation, setFraisIntermediation] = useState(dossier.frais_intermediation ?? "");
+  const [date, setDate] = useState(dossier.date || new Date().toISOString().slice(0, 10));
+
+  const valide = client.trim() !== "" && voiture.trim() !== "" && Number(mandatTotal) > 0;
+
+  return (
+    <div style={styles.modalFond} onClick={onFermer}>
+      <div style={styles.modalCarte} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalEnTete}>
+          <h3 style={styles.modalTitre}>{estEdition ? "Modifier le dossier" : "Nouveau dossier"}</h3>
+          <button style={styles.modalFermer} onClick={onFermer}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {estAdmin && (
+          <label style={styles.champLabel}>
+            Commercial
+            <select value={commercialId} onChange={(e) => setCommercialId(Number(e.target.value))} style={styles.select}>
+              {commerciaux.map((c) => (
+                <option key={c.id} value={c.id}>{c.nom}</option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        <label style={styles.champLabel}>
+          Date
+          <input style={styles.input} type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </label>
+
+        <label style={styles.champLabel}>
+          Client
+          <input style={styles.input} value={client} onChange={(e) => setClient(e.target.value)} placeholder="Nom du client" />
+        </label>
+
+        <label style={styles.champLabel}>
+          Voiture
+          <input style={styles.input} value={voiture} onChange={(e) => setVoiture(e.target.value)} placeholder="Ex: Peugeot 3008" />
+        </label>
+
+        <label style={styles.champLabel}>
+          Plaque d'immatriculation
+          <input
+            style={styles.input}
+            value={plaque}
+            onChange={(e) => setPlaque(e.target.value.toUpperCase())}
+            placeholder="AA-123-BB"
+          />
+        </label>
+
+        <label style={styles.champLabel}>
+          Garantie achat (€)
+          <input style={styles.input} type="number" value={garantieAchat} onChange={(e) => setGarantieAchat(e.target.value)} placeholder="0" />
+        </label>
+
+        <label style={styles.champLabel}>
+          Garantie prix vendu (€)
+          <input style={styles.input} type="number" value={garantiePrixVendu} onChange={(e) => setGarantiePrixVendu(e.target.value)} placeholder="0" />
+        </label>
+
+        <div style={styles.tcaApercu}>
+          <span>TCA (18%)</span>
+          <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#C58AF0", fontWeight: 600 }}>
+            {fmtEUR(Math.max(0, (Number(garantiePrixVendu) || 0) - (Number(garantieAchat) || 0)) * 0.18)}
+          </span>
+        </div>
+
+        <label style={styles.champLabel}>
+          Mandat total (€)
+          <input style={styles.input} type="number" value={mandatTotal} onChange={(e) => setMandatTotal(e.target.value)} placeholder="0" />
+        </label>
+
+        <label style={styles.champLabel}>
+          Frais d'intermédiation (€)
+          <input
+            style={styles.input}
+            type="number"
+            value={fraisIntermediation}
+            onChange={(e) => setFraisIntermediation(e.target.value)}
+            placeholder="0"
+          />
+        </label>
+
+        <button
+          style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}
+          disabled={!valide}
+          onClick={() =>
+            valide &&
+            onValider({
+              id: dossier.id,
+              commercial_id: commercialId,
+              client,
+              voiture,
+              plaque,
+              garantie_achat: Number(garantieAchat) || 0,
+              garantie_prix_vendu: Number(garantiePrixVendu) || 0,
+              mandat_total: Number(mandatTotal),
+              frais_intermediation: Number(fraisIntermediation) || 0,
+              date,
+            })
+          }
+        >
+          {estEdition ? "Enregistrer les modifications" : "Enregistrer le dossier"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Équipe & entreprises (admin) ----------
+
+function EquipeEtEntreprises({ entreprises, commerciaux, onNouvelleEntreprise, onModifierEntreprise, onNouveauCommercial, onModifierCommercial }) {
+  const nomEntreprise = (id) => entreprises.find((e) => e.id === id)?.nom || "—";
+
+  return (
+    <div>
+      <div style={styles.sectionHeader}>
+        <h2 style={styles.sectionTitre}>Entreprises ({entreprises.length}/5)</h2>
+        <button style={styles.boutonAjout} disabled={entreprises.length >= 5} onClick={onNouvelleEntreprise}>
+          <Plus size={16} strokeWidth={2.5} /> Nouvelle entreprise
+        </button>
+      </div>
+      <div style={styles.cartesEntreprises}>
+        {entreprises.map((e) => (
+          <button key={e.id} style={styles.carteEntreprise} onClick={() => onModifierEntreprise(e)} title="Modifier">
+            <span style={{ ...styles.puceCouleur, background: e.couleur, width: 10, height: 10 }} />
+            {e.nom}
+            <Pencil size={12} style={{ marginLeft: 4, opacity: 0.6 }} />
+          </button>
+        ))}
+      </div>
+
+      <div style={{ ...styles.sectionHeader, marginTop: 32 }}>
+        <h2 style={styles.sectionTitre}>Commerciaux</h2>
+        <button style={styles.boutonAjout} onClick={onNouveauCommercial}>
+          <Plus size={16} strokeWidth={2.5} /> Nouveau commercial
+        </button>
+      </div>
+      <div style={styles.tableauConteneur}>
+        <table style={styles.tableau}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Nom</th>
+              <th style={styles.th}>Entreprise</th>
+              <th style={{ ...styles.th, textAlign: "right" }}>Taux de commission</th>
+              <th style={styles.th}>Statut</th>
+              <th style={styles.th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {commerciaux.map((c) => (
+              <tr key={c.id} style={styles.tr}>
+                <td style={styles.td}>{c.nom}</td>
+                <td style={styles.td}>{nomEntreprise(c.entreprise_id)}</td>
+                <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{(c.taux * 100).toFixed(1)}%</td>
+                <td style={styles.td}>
+                  <span style={{ color: c.actif ? "#4FD1C5" : "#8B93A1" }}>{c.actif ? "Actif" : "Désactivé"}</span>
+                </td>
+                <td style={styles.td}>
+                  <button style={styles.boutonIcone} onClick={() => onModifierCommercial(c)} title="Modifier">
+                    <Pencil size={14} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
+  const estEdition = Boolean(commercial.id);
+  const [nom, setNom] = useState(commercial.nom || "");
+  const [entrepriseId, setEntrepriseId] = useState(commercial.entreprise_id || entreprises[0]?.id);
+  const [taux, setTaux] = useState(commercial.taux != null ? commercial.taux * 100 : "");
+  const [actif, setActif] = useState(commercial.actif ?? true);
+  const [identifiant, setIdentifiant] = useState("");
+  const [motDePasse, setMotDePasse] = useState("");
+
+  const valide = estEdition
+    ? nom.trim() !== "" && Number(taux) > 0
+    : nom.trim() !== "" && Number(taux) > 0 && identifiant.trim() !== "" && motDePasse.trim() !== "";
+
+  return (
+    <div style={styles.modalFond} onClick={onFermer}>
+      <div style={styles.modalCarte} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalEnTete}>
+          <h3 style={styles.modalTitre}>{estEdition ? "Modifier le commercial" : "Nouveau commercial"}</h3>
+          <button style={styles.modalFermer} onClick={onFermer}><X size={18} /></button>
+        </div>
+
+        <label style={styles.champLabel}>
+          Nom
+          <input style={styles.input} value={nom} onChange={(e) => setNom(e.target.value)} placeholder="Nom complet" />
+        </label>
+
+        <label style={styles.champLabel}>
+          Entreprise
+          <select value={entrepriseId} onChange={(e) => setEntrepriseId(Number(e.target.value))} style={styles.select}>
+            {entreprises.map((e) => <option key={e.id} value={e.id}>{e.nom}</option>)}
+          </select>
+        </label>
+
+        <label style={styles.champLabel}>
+          Taux de commission (%)
+          <input style={styles.input} type="number" step="0.1" value={taux} onChange={(e) => setTaux(e.target.value)} placeholder="8" />
+        </label>
+
+        {estEdition && (
+          <label style={styles.champLabel}>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="checkbox" checked={actif} onChange={(e) => setActif(e.target.checked)} />
+              Compte actif
+            </span>
+          </label>
+        )}
+
+        {!estEdition && (
+          <label style={styles.champLabel}>
+            Identifiant de connexion
+            <input style={styles.input} value={identifiant} onChange={(e) => setIdentifiant(e.target.value)} placeholder="prenom.nom" />
+          </label>
+        )}
+
+        <label style={styles.champLabel}>
+          {estEdition ? "Réinitialiser le mot de passe (laisser vide pour ne pas changer)" : "Mot de passe initial"}
+          <input style={styles.input} type="password" value={motDePasse} onChange={(e) => setMotDePasse(e.target.value)} placeholder="••••••••" />
+        </label>
+
+        <button
+          style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}
+          disabled={!valide}
+          onClick={() =>
+            valide &&
+            onValider(
+              estEdition
+                ? { id: commercial.id, nom, entreprise_id: entrepriseId, taux: Number(taux) / 100, actif, mot_de_passe: motDePasse }
+                : { nom, entreprise_id: entrepriseId, taux: Number(taux) / 100, identifiant, mot_de_passe: motDePasse }
+            )
+          }
+        >
+          {estEdition ? "Enregistrer" : "Créer le commercial"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ModalEntreprise({ entreprise, onFermer, onValider }) {
+  const estEdition = Boolean(entreprise.id);
+  const [nom, setNom] = useState(entreprise.nom || "");
+  const [couleur, setCouleur] = useState(entreprise.couleur || "#4FD1C5");
+  const valide = nom.trim() !== "";
+
+  return (
+    <div style={styles.modalFond} onClick={onFermer}>
+      <div style={styles.modalCarte} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalEnTete}>
+          <h3 style={styles.modalTitre}>{estEdition ? "Modifier l'entreprise" : "Nouvelle entreprise"}</h3>
+          <button style={styles.modalFermer} onClick={onFermer}><X size={18} /></button>
+        </div>
+
+        <label style={styles.champLabel}>
+          Nom
+          <input style={styles.input} value={nom} onChange={(e) => setNom(e.target.value)} placeholder="Nom de l'entreprise" />
+        </label>
+
+        <label style={styles.champLabel}>
+          Couleur d'identification
+          <input style={{ ...styles.input, height: 40, padding: 4 }} type="color" value={couleur} onChange={(e) => setCouleur(e.target.value)} />
+        </label>
+
+        <button
+          style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}
+          disabled={!valide}
+          onClick={() => valide && onValider({ id: entreprise.id, nom, couleur })}
+        >
+          {estEdition ? "Enregistrer les modifications" : "Créer l'entreprise"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Styles ----------
+
+const styles = {
+  page: { minHeight: "100vh", background: "#14171C", color: "#E7E5E0", fontFamily: "'Inter', system-ui, sans-serif" },
+  pageChargement: {
+    minHeight: "100vh", background: "#14171C", color: "#8B93A1", display: "flex",
+    alignItems: "center", justifyContent: "center", fontFamily: "'Inter', sans-serif", fontSize: 14,
+  },
+  pageConnexion: {
+    minHeight: "100vh", background: "#14171C", color: "#E7E5E0", display: "flex",
+    alignItems: "center", justifyContent: "center", fontFamily: "'Inter', system-ui, sans-serif",
+  },
+  carteConnexion: { background: "#1C232D", border: "1px solid #2A323D", borderRadius: 16, padding: "36px 32px", width: 340 },
+  logoConnexion: { display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10 },
+  logoImage: { width: "100%", maxWidth: 220, height: "auto", display: "block" },
+  logoTexte: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 19, fontWeight: 600, letterSpacing: -0.3 },
+  sousTitreConnexion: { fontSize: 13, color: "#8B93A1", marginBottom: 22 },
+  erreurConnexion: { fontSize: 12.5, color: "#E8746B", marginBottom: 14 },
+  messageConnexion: { fontSize: 12.5, color: "#4FD1C5", marginBottom: 14 },
+  lienMotDePasseOublie: {
+    width: "100%", background: "transparent", border: "none", color: "#8B93A1",
+    fontSize: 12.5, cursor: "pointer", marginTop: 14, textDecoration: "underline",
+    fontFamily: "'Inter', sans-serif",
+  },
+  select: {
+    width: "100%", padding: "10px 12px", background: "#14171C", border: "1px solid #2A323D",
+    borderRadius: 8, color: "#E7E5E0", fontSize: 14, marginTop: 6, fontFamily: "'Inter', sans-serif",
+  },
+  boutonConnexion: {
+    width: "100%", padding: "12px 0", background: "#E8A33D", border: "none", borderRadius: 8,
+    color: "#14171C", fontSize: 14, fontWeight: 600, cursor: "pointer", marginTop: 4,
+  },
+  ticker: { background: "#0F1216", borderBottom: "1px solid #2A323D", overflow: "hidden", padding: "8px 0", minHeight: 33 },
+  tickerContenu: { display: "flex", gap: 40, whiteSpace: "nowrap" },
+  tickerItem: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#8B93A1", paddingRight: 20 },
+  tickerPuce: { width: 6, height: 6, borderRadius: "50%", display: "inline-block" },
+  enTete: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 28px", borderBottom: "1px solid #2A323D" },
+  enTeteGauche: { display: "flex", alignItems: "center", gap: 8 },
+  enTeteLogo: { height: 24, width: "auto", display: "block" },
+  enTeteTitre: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 17, fontWeight: 600 },
+  enTeteDroite: { display: "flex", alignItems: "center", gap: 14 },
+  badgeRole: { fontSize: 11.5, padding: "4px 10px", borderRadius: 20, background: "#4FD1C522", color: "#4FD1C5", fontWeight: 500 },
+  nomUtilisateur: { fontSize: 13.5, color: "#8B93A1" },
+  boutonDeconnexion: { background: "transparent", border: "1px solid #2A323D", borderRadius: 8, padding: 7, color: "#8B93A1", cursor: "pointer", display: "flex" },
+  corps: { padding: "24px 28px 48px", maxWidth: 1100, margin: "0 auto" },
+  bandeauErreur: {
+    display: "flex", justifyContent: "space-between", alignItems: "center", background: "#E8746B1A",
+    border: "1px solid #E8746B55", color: "#E8746B", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 16,
+  },
+  fermerErreur: { background: "transparent", border: "none", color: "#E8746B", cursor: "pointer", display: "flex" },
+  ongletsRangee: { display: "flex", gap: 6, marginBottom: 20 },
+  onglet: {
+    padding: "8px 16px", borderRadius: 8, border: "1px solid #2A323D", background: "transparent",
+    color: "#8B93A1", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif",
+  },
+  ongletActif: { background: "#1C232D", color: "#E7E5E0", borderColor: "#E8A33D" },
+  filtreRangee: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" },
+  puceFiltre: {
+    display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 20, border: "1px solid #2A323D",
+    background: "transparent", color: "#8B93A1", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif",
+  },
+  puceFiltreActive: { background: "#1C232D", color: "#E7E5E0", borderColor: "#4FD1C5" },
+  puceCouleur: { width: 7, height: 7, borderRadius: "50%", display: "inline-block" },
+  selectFiltre: {
+    padding: "7px 12px", borderRadius: 20, border: "1px solid #2A323D", background: "#1C232D",
+    color: "#E7E5E0", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif",
+  },
+  kpiRangee: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 32 },
+  kpiCarte: { background: "#1C232D", border: "1px solid #2A323D", borderRadius: 12, padding: "18px 20px", display: "flex", alignItems: "center", gap: 14 },
+  kpiIcone: { width: 38, height: 38, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  kpiValeur: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 20, fontWeight: 600, lineHeight: 1.2 },
+  kpiLabel: { fontSize: 12.5, color: "#8B93A1", marginTop: 2 },
+  sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  sectionTitre: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 16, fontWeight: 600, margin: 0 },
+  boutonAjout: {
+    display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "#E8A33D", border: "none",
+    borderRadius: 8, color: "#14171C", fontSize: 13, fontWeight: 600, cursor: "pointer",
+  },
+  cartesEntreprises: { display: "flex", gap: 10, flexWrap: "wrap" },
+  carteEntreprise: {
+    display: "flex", alignItems: "center", gap: 8, background: "#1C232D", border: "1px solid #2A323D",
+    borderRadius: 10, padding: "10px 16px", fontSize: 13.5, color: "#E7E5E0", cursor: "pointer",
+    fontFamily: "'Inter', sans-serif",
+  },
+  tableauConteneur: { background: "#1C232D", border: "1px solid #2A323D", borderRadius: 12, overflowX: "auto" },
+  tableau: { width: "100%", minWidth: 1180, borderCollapse: "collapse" },
+  th: {
+    textAlign: "left", fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.4, color: "#8B93A1",
+    padding: "12px 18px", borderBottom: "1px solid #2A323D", fontWeight: 500, whiteSpace: "nowrap",
+  },
+  colFigeDate: { position: "sticky", left: 0, zIndex: 2, background: "#1C232D", minWidth: 112, maxWidth: 112 },
+  colFigeClient: { position: "sticky", left: 112, zIndex: 2, background: "#1C232D", minWidth: 150, maxWidth: 150 },
+  colFigeVehicule: {
+    position: "sticky", left: 262, zIndex: 2, background: "#1C232D", minWidth: 170, maxWidth: 170,
+    boxShadow: "6px 0 8px -4px rgba(0,0,0,0.5)",
+  },
+  tr: { borderBottom: "1px solid #232A34" },
+  td: { padding: "13px 18px", fontSize: 13.5, whiteSpace: "nowrap" },
+  mono: { fontFamily: "'IBM Plex Mono', monospace" },
+  puceEntreprise: { display: "flex", alignItems: "center", gap: 6, fontSize: 13 },
+  videEtat: { padding: "40px 0", textAlign: "center", color: "#8B93A1", fontSize: 13.5 },
+  boutonIcone: {
+    background: "transparent", border: "1px solid #2A323D", borderRadius: 6, padding: 6, color: "#8B93A1",
+    cursor: "pointer", display: "inline-flex", marginRight: 6,
+  },
+  modalFond: { position: "fixed", inset: 0, background: "#00000099", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10, overflowY: "auto", padding: "24px 0" },
+  modalCarte: { background: "#1C232D", border: "1px solid #2A323D", borderRadius: 14, padding: 26, width: 360 },
+  modalEnTete: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 },
+  modalTitre: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 16, margin: 0 },
+  modalFermer: { background: "transparent", border: "none", color: "#8B93A1", cursor: "pointer", display: "flex" },
+  champLabel: { display: "block", fontSize: 12.5, color: "#8B93A1", marginBottom: 16 },
+  tcaApercu: {
+    display: "flex", justifyContent: "space-between", alignItems: "center", background: "#14171C",
+    border: "1px solid #2A323D", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: "#8B93A1", marginBottom: 16,
+  },
+  input: {
+    width: "100%", padding: "10px 12px", background: "#14171C", border: "1px solid #2A323D", borderRadius: 8,
+    color: "#E7E5E0", fontSize: 14, marginTop: 6, fontFamily: "'Inter', sans-serif", boxSizing: "border-box",
+  },
+};
+
+createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# Base de données locale (en production, elle vit sur un disque persistant séparé)
+app.db
+app.db-shm
+app.db-wal
+
+# Secrets locaux — ne doivent jamais être poussés sur GitHub
+secret.key
+email_config.py
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

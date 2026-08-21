@@ -663,6 +663,7 @@ const GARANTIE_ACHAT_NON_VENDUE = [90.15, 86.15];
 
 function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder }) {
   const chiffreAffairesHT = dossiers.reduce((s, d) => s + d.total_ht, 0);
+  const caTtc = dossiers.reduce((s, d) => s + d.mandat_total, 0);
   const caHtBrut = dossiers.reduce((s, d) => s + d.mandat_total / 1.2, 0);
   const totalCommissions = dossiers.reduce((s, d) => s + d.commission, 0);
   const caFraisIntermediation = dossiers.reduce((s, d) => s + d.frais_intermediation, 0);
@@ -689,6 +690,7 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder })
   const kpisBase = [
     { id: "ca_ht_net", label: "CA HT net", valeur: fmtEUR(chiffreAffairesHT), icone: TrendingUp, couleur: "#E8A33D" },
     { id: "ca_ht_brut", label: "CA HT brut", valeur: fmtEUR(caHtBrut), icone: TrendingUp, couleur: "#5B8DEF" },
+    { id: "ca_ttc", label: "CA TTC", valeur: fmtEUR(caTtc), icone: TrendingUp, couleur: "#4FD1C5" },
     { id: "garanties_vendues", label: "Nombre de garanties vendues", valeur: garantiesVendues, icone: ShieldCheck, couleur: "#C58AF0" },
     { id: "commissions_dues", label: "Commissions dues", valeur: fmtEUR(totalCommissions), icone: Users, couleur: "#4FD1C5" },
     { id: "voitures_vendues", label: "Voitures vendues", valeur: voituresVendues, icone: Car, couleur: "#8B93A1" },

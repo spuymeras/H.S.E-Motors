@@ -1018,7 +1018,10 @@ function EquipeEtEntreprises({
               <tr key={c.id} style={styles.tr}>
                 <td style={styles.td}>{c.nom}</td>
                 <td style={styles.td}>{nomEntreprise(c.entreprise_id)}</td>
-                <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{(c.taux * 100).toFixed(1)}%</td>
+                <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>
+                  {(c.taux_effectif * 100).toFixed(1)}%
+                  {c.taux_auto && <span style={styles.puceAuto}> auto</span>}
+                </td>
                 <td style={styles.td}>
                   <span style={{ color: c.actif ? "#4FD1C5" : "#8B93A1" }}>{c.actif ? "Actif" : "Désactivé"}</span>
                 </td>
@@ -1147,14 +1150,15 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
   const estEdition = Boolean(commercial.id);
   const [nom, setNom] = useState(commercial.nom || "");
   const [entrepriseId, setEntrepriseId] = useState(commercial.entreprise_id || entreprises[0]?.id);
+  const [tauxAuto, setTauxAuto] = useState(estEdition ? Boolean(commercial.taux_auto) : true);
   const [taux, setTaux] = useState(commercial.taux != null ? commercial.taux * 100 : "");
   const [actif, setActif] = useState(commercial.actif ?? true);
   const [identifiant, setIdentifiant] = useState("");
   const [motDePasse, setMotDePasse] = useState("");
 
   const valide = estEdition
-    ? nom.trim() !== "" && Number(taux) > 0
-    : nom.trim() !== "" && Number(taux) > 0 && identifiant.trim() !== "" && motDePasse.trim() !== "";
+    ? nom.trim() !== "" && (tauxAuto || Number(taux) > 0)
+    : nom.trim() !== "" && (tauxAuto || Number(taux) > 0) && identifiant.trim() !== "" && motDePasse.trim() !== "";
 
   return (
     <div style={styles.modalFond} onClick={onFermer}>
@@ -1177,9 +1181,24 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
         </label>
 
         <label style={styles.champLabel}>
-          Taux de commission (%)
-          <input style={styles.input} type="number" step="0.1" value={taux} onChange={(e) => setTaux(e.target.value)} placeholder="8" />
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input type="checkbox" checked={tauxAuto} onChange={(e) => setTauxAuto(e.target.checked)} />
+            Taux automatique
+          </span>
         </label>
+        <div style={styles.tauxAutoAide}>
+          CA HT net du mois ≤ 8 000 € → 20% · &gt; 8 000 € → 35%
+          {estEdition && (
+            <> — actuellement <strong>{(commercial.taux_effectif * 100).toFixed(1)}%</strong></>
+          )}
+        </div>
+
+        {!tauxAuto && (
+          <label style={styles.champLabel}>
+            Taux de commission manuel (%)
+            <input style={styles.input} type="number" step="0.1" value={taux} onChange={(e) => setTaux(e.target.value)} placeholder="8" />
+          </label>
+        )}
 
         {estEdition && (
           <label style={styles.champLabel}>
@@ -1209,8 +1228,16 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
             valide &&
             onValider(
               estEdition
-                ? { id: commercial.id, nom, entreprise_id: entrepriseId, taux: Number(taux) / 100, actif, mot_de_passe: motDePasse }
-                : { nom, entreprise_id: entrepriseId, taux: Number(taux) / 100, identifiant, mot_de_passe: motDePasse }
+                ? {
+                    id: commercial.id, nom, entreprise_id: entrepriseId,
+                    taux: tauxAuto ? null : Number(taux) / 100,
+                    actif, mot_de_passe: motDePasse,
+                  }
+                : {
+                    nom, entreprise_id: entrepriseId,
+                    taux: tauxAuto ? null : Number(taux) / 100,
+                    identifiant, mot_de_passe: motDePasse,
+                  }
             )
           }
         >
@@ -1370,6 +1397,8 @@ const styles = {
   modalTitre: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 16, margin: 0 },
   modalFermer: { background: "transparent", border: "none", color: "#8B93A1", cursor: "pointer", display: "flex" },
   champLabel: { display: "block", fontSize: 12.5, color: "#8B93A1", marginBottom: 16 },
+  tauxAutoAide: { fontSize: 11.5, color: "#8B93A1", marginTop: -10, marginBottom: 16 },
+  puceAuto: { fontSize: 10.5, color: "#4FD1C5", fontFamily: "'Inter', sans-serif" },
   tcaApercu: {
     display: "flex", justifyContent: "space-between", alignItems: "center", background: "#14171C",
     border: "1px solid #2A323D", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: "#8B93A1", marginBottom: 16,

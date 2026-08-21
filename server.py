@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS commerciaux (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     nom TEXT NOT NULL,
     entreprise_id INTEGER NOT NULL REFERENCES entreprises(id),
-    taux REAL NOT NULL,
+    taux REAL,
     actif INTEGER NOT NULL DEFAULT 1
 );
 
@@ -143,6 +143,26 @@ def migrer_db(db):
                 SELECT id, identifiant, password_hash, role, commercial_id, nom, kpi_order FROM utilisateurs;
             DROP TABLE utilisateurs;
             ALTER TABLE utilisateurs_nouveau RENAME TO utilisateurs;
+            """
+        )
+
+    schema_commerciaux = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'commerciaux'"
+    ).fetchone()[0]
+    if "taux REAL NOT NULL" in schema_commerciaux:
+        db.executescript(
+            """
+            CREATE TABLE commerciaux_nouveau (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nom TEXT NOT NULL,
+                entreprise_id INTEGER NOT NULL REFERENCES entreprises(id),
+                taux REAL,
+                actif INTEGER NOT NULL DEFAULT 1
+            );
+            INSERT INTO commerciaux_nouveau (id, nom, entreprise_id, taux, actif)
+                SELECT id, nom, entreprise_id, taux, actif FROM commerciaux;
+            DROP TABLE commerciaux;
+            ALTER TABLE commerciaux_nouveau RENAME TO commerciaux;
             """
         )
 
@@ -475,12 +495,45 @@ def update_entreprise(entreprise_id):
 
 # ---------- Routes: commerciaux ----------
 
-def commercial_dict(row):
+SEUIL_TAUX_AUTO = 8000.0
+TAUX_AUTO_BAS = 0.20
+TAUX_AUTO_HAUT = 0.35
+
+
+def total_ht_ligne(row):
+    tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 0.18
+    return (row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL) / 1.2
+
+
+def ca_ht_net_mensuel(db, commercial_id, mois):
+    rows = db.execute(
+        "SELECT garantie_achat, garantie_prix_vendu, mandat_total FROM dossiers "
+        "WHERE commercial_id = ? AND substr(date, 1, 7) = ?",
+        (commercial_id, mois),
+    ).fetchall()
+    return sum(total_ht_ligne(r) for r in rows)
+
+
+def taux_automatique(db, commercial_id, mois):
+    ca = ca_ht_net_mensuel(db, commercial_id, mois)
+    return TAUX_AUTO_HAUT if ca > SEUIL_TAUX_AUTO else TAUX_AUTO_BAS
+
+
+def taux_effectif(db, com, mois):
+    if com["taux"] is not None:
+        return com["taux"]
+    return taux_automatique(db, com["id"], mois)
+
+
+def commercial_dict(row, db):
+    mois_courant = datetime.utcnow().strftime("%Y-%m")
     return {
         "id": row["id"],
         "nom": row["nom"],
         "entreprise_id": row["entreprise_id"],
         "taux": row["taux"],
+        "taux_auto": row["taux"] is None,
+        "taux_effectif": taux_effectif(db, row, mois_courant),
         "actif": bool(row["actif"]),
     }
 
@@ -493,7 +546,17 @@ def list_commerciaux():
         rows = db.execute("SELECT * FROM commerciaux ORDER BY nom").fetchall()
     else:
         rows = db.execute("SELECT * FROM commerciaux WHERE id = ?", (g.user["commercial_id"],)).fetchall()
-    return jsonify([commercial_dict(r) for r in rows])
+    return jsonify([commercial_dict(r, db) for r in rows])
+
+
+def parser_taux_optionnel(data):
+    """Retourne (taux, erreur). taux est None si absent/vide (mode automatique)."""
+    if "taux" not in data or data["taux"] in (None, ""):
+        return None, None
+    try:
+        return float(data["taux"]), None
+    except (TypeError, ValueError):
+        return None, "Taux invalide"
 
 
 @app.post("/api/commerciaux")
@@ -502,16 +565,15 @@ def create_commercial():
     data = request.get_json(silent=True) or {}
     nom = (data.get("nom") or "").strip()
     entreprise_id = data.get("entreprise_id")
-    taux = data.get("taux")
     identifiant = (data.get("identifiant") or "").strip()
     mot_de_passe = data.get("mot_de_passe") or ""
 
-    if not nom or not entreprise_id or taux is None or not identifiant or not mot_de_passe:
-        return jsonify(error="Tous les champs sont requis (nom, entreprise, taux, identifiant, mot de passe)"), 400
-    try:
-        taux = float(taux)
-    except (TypeError, ValueError):
-        return jsonify(error="Taux invalide"), 400
+    if not nom or not entreprise_id or not identifiant or not mot_de_passe:
+        return jsonify(error="Nom, entreprise, identifiant et mot de passe sont requis"), 400
+
+    taux, erreur = parser_taux_optionnel(data)
+    if erreur:
+        return jsonify(error=erreur), 400
 
     db = get_db()
     if db.execute("SELECT 1 FROM utilisateurs WHERE identifiant = ?", (identifiant,)).fetchone():
@@ -530,7 +592,7 @@ def create_commercial():
     )
     db.commit()
     row = db.execute("SELECT * FROM commerciaux WHERE id = ?", (commercial_id,)).fetchone()
-    return jsonify(commercial_dict(row)), 201
+    return jsonify(commercial_dict(row, db)), 201
 
 
 @app.put("/api/commerciaux/<int:commercial_id>")
@@ -543,13 +605,16 @@ def update_commercial(commercial_id):
         return jsonify(error="Commercial introuvable"), 404
 
     nom = data.get("nom", row["nom"])
-    taux = data.get("taux", row["taux"])
     actif = data.get("actif", bool(row["actif"]))
     entreprise_id = data.get("entreprise_id", row["entreprise_id"])
-    try:
-        taux = float(taux)
-    except (TypeError, ValueError):
-        return jsonify(error="Taux invalide"), 400
+
+    if "taux" in data:
+        taux, erreur = parser_taux_optionnel(data)
+        if erreur:
+            return jsonify(error=erreur), 400
+    else:
+        taux = row["taux"]
+
     if not db.execute("SELECT 1 FROM entreprises WHERE id = ?", (entreprise_id,)).fetchone():
         return jsonify(error="Entreprise inconnue"), 400
 
@@ -566,7 +631,7 @@ def update_commercial(commercial_id):
         )
     db.commit()
     row = db.execute("SELECT * FROM commerciaux WHERE id = ?", (commercial_id,)).fetchone()
-    return jsonify(commercial_dict(row))
+    return jsonify(commercial_dict(row, db))
 
 
 # ---------- Routes: animateurs (accès lecture seule, toutes entreprises) ----------
@@ -612,10 +677,11 @@ def create_animateur():
 CASH_SENTINEL = 43.20
 
 
-def dossier_dict(row, com, ent):
+def dossier_dict(row, com, ent, db):
     tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 0.18
     total_ht = (row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL) / 1.2
-    commission = total_ht * com["taux"]
+    taux = taux_effectif(db, com, row["date"][:7])
+    commission = total_ht * taux
     return {
         "id": row["id"],
         "commercial_id": row["commercial_id"],
@@ -643,7 +709,7 @@ def enrich(db, rows):
     for row in rows:
         com = db.execute("SELECT * FROM commerciaux WHERE id = ?", (row["commercial_id"],)).fetchone()
         ent = db.execute("SELECT * FROM entreprises WHERE id = ?", (com["entreprise_id"],)).fetchone()
-        result.append(dossier_dict(row, com, ent))
+        result.append(dossier_dict(row, com, ent, db))
     return result
 
 

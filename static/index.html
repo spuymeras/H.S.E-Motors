@@ -1388,7 +1388,10 @@ const styles = {
     borderRadius: 10, padding: "10px 16px", fontSize: 13.5, color: "#E7E5E0", cursor: "pointer",
     fontFamily: "'Inter', sans-serif",
   },
-  tableauConteneur: { background: "#1C232D", border: "1px solid #2A323D", borderRadius: 12, overflowX: "auto" },
+  tableauConteneur: {
+    background: "#1C232D", border: "1px solid #2A323D", borderRadius: 12, overflowX: "auto",
+    WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y", overscrollBehaviorX: "contain",
+  },
   tableau: { width: "100%", minWidth: 1180, borderCollapse: "collapse" },
   th: {
     textAlign: "left", fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.4, color: "#8B93A1",

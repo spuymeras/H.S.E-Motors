@@ -19,6 +19,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
 <style>
   html, body { margin: 0; padding: 0; background: #14171C; }
+  @keyframes tourner { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>
 <script>
   if ("serviceWorker" in navigator) {
@@ -44,7 +45,7 @@
 <script type="text/babel" data-type="module" data-presets="react">
 import React, { useState, useEffect, useCallback } from "react";
 import { createRoot } from "react-dom/client";
-import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search } from "lucide-react";
+import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw } from "lucide-react";
 
 // ---------- API ----------
 
@@ -86,6 +87,7 @@ export default function App() {
   const [modalEntreprise, setModalEntreprise] = useState(null); // null | {} | entreprise existante
   const [erreur, setErreur] = useState("");
   const [kpiOrder, setKpiOrder] = useState(null);
+  const [actualisation, setActualisation] = useState(false);
 
   const estAdmin = utilisateur?.role === "admin";
   const estAnimateur = utilisateur?.role === "animateur";
@@ -163,6 +165,17 @@ export default function App() {
     await Promise.all([chargerReferentiels(), chargerDossiers(entrepriseFiltre), chargerDossiersTous()]);
   };
 
+  const actualiserManuellement = async () => {
+    setActualisation(true);
+    try {
+      await rafraichir();
+    } catch (e) {
+      setErreur(e.message);
+    } finally {
+      setActualisation(false);
+    }
+  };
+
   if (chargement) {
     return <div style={styles.pageChargement}>Chargement…</div>;
   }
@@ -189,7 +202,12 @@ export default function App() {
   return (
     <div style={styles.page}>
       <TickerBandeau entreprises={entreprises} dossiers={dossiersTous} />
-      <EnTete utilisateur={utilisateur} onDeconnexion={handleDeconnexion} />
+      <EnTete
+        utilisateur={utilisateur}
+        onDeconnexion={handleDeconnexion}
+        onActualiser={actualiserManuellement}
+        actualisation={actualisation}
+      />
 
       <div style={styles.corps}>
         {erreur && (
@@ -591,7 +609,7 @@ function TickerBandeau({ entreprises, dossiers }) {
 
 // ---------- En-tête ----------
 
-function EnTete({ utilisateur, onDeconnexion }) {
+function EnTete({ utilisateur, onDeconnexion, onActualiser, actualisation }) {
   return (
     <header style={styles.enTete}>
       <div style={styles.enTeteGauche}>
@@ -599,6 +617,15 @@ function EnTete({ utilisateur, onDeconnexion }) {
         <span style={styles.enTeteTitre}>H.S.E Motors</span>
       </div>
       <div style={styles.enTeteDroite}>
+        <button
+          style={styles.boutonActualiser}
+          onClick={onActualiser}
+          disabled={actualisation}
+          title="Actualiser les ventes et les KPI"
+        >
+          <RefreshCw size={16} style={actualisation ? styles.iconeRotation : undefined} />
+          <span style={styles.boutonActualiserTexte}>Actualiser</span>
+        </button>
         <span style={styles.badgeRole}>
           {utilisateur.role === "admin" ? "Vue admin" : utilisateur.role === "animateur" ? "Vue animateur" : "Vue commercial"}
         </span>
@@ -1384,10 +1411,17 @@ const styles = {
   enTeteGauche: { display: "flex", alignItems: "center", gap: 8 },
   enTeteLogo: { height: 24, width: "auto", display: "block" },
   enTeteTitre: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 17, fontWeight: 600 },
-  enTeteDroite: { display: "flex", alignItems: "center", gap: 14 },
+  enTeteDroite: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", justifyContent: "flex-end" },
   badgeRole: { fontSize: 11.5, padding: "4px 10px", borderRadius: 20, background: "#4FD1C522", color: "#4FD1C5", fontWeight: 500 },
   nomUtilisateur: { fontSize: 13.5, color: "#8B93A1" },
   boutonDeconnexion: { background: "transparent", border: "1px solid #2A323D", borderRadius: 8, padding: 7, color: "#8B93A1", cursor: "pointer", display: "flex" },
+  boutonActualiser: {
+    display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "1px solid #2A323D",
+    borderRadius: 8, padding: "7px 12px", color: "#8B93A1", cursor: "pointer", fontSize: 13,
+    fontFamily: "'Inter', sans-serif",
+  },
+  boutonActualiserTexte: {},
+  iconeRotation: { animation: "tourner 0.8s linear infinite" },
   corps: { padding: "24px 28px 48px", maxWidth: 1100, margin: "0 auto" },
   bandeauErreur: {
     display: "flex", justifyContent: "space-between", alignItems: "center", background: "#E8746B1A",

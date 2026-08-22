@@ -333,8 +333,11 @@ def peut_tout_voir(user):
 
 
 def user_public(user, db):
+    # L'ordre des cartes KPI est une préférence personnelle : chaque compte
+    # (admin, commercial, animateur) a la sienne, stockée sur sa propre ligne.
+    kpi_order = json.loads(user["kpi_order"]) if user["kpi_order"] else None
+
     if user["role"] == "admin":
-        kpi_order = json.loads(user["kpi_order"]) if user["kpi_order"] else None
         return {
             "id": user["id"],
             "role": "admin",
@@ -343,7 +346,13 @@ def user_public(user, db):
             "kpi_order": kpi_order,
         }
     if user["role"] == "animateur":
-        return {"id": user["id"], "role": "animateur", "nom": user["nom"] or "Animateur", "identifiant": user["identifiant"]}
+        return {
+            "id": user["id"],
+            "role": "animateur",
+            "nom": user["nom"] or "Animateur",
+            "identifiant": user["identifiant"],
+            "kpi_order": kpi_order,
+        }
     com = db.execute("SELECT * FROM commerciaux WHERE id = ?", (user["commercial_id"],)).fetchone()
     return {
         "id": user["id"],
@@ -353,6 +362,7 @@ def user_public(user, db):
         "commercial_id": com["id"],
         "entreprise_id": com["entreprise_id"],
         "taux": com["taux"],
+        "kpi_order": kpi_order,
     }
 
 
@@ -515,7 +525,7 @@ def me():
 
 
 @app.put("/api/preferences/kpi-order")
-@admin_required
+@login_required
 def sauvegarder_ordre_kpi():
     data = request.get_json(silent=True) or {}
     ordre = data.get("order")

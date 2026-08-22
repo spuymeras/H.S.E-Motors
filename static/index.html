@@ -776,7 +776,27 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder })
 
 // ---------- Tableau des ventes ----------
 
+function useColonnesFigees() {
+  // Les colonnes figées (position: sticky) entrent en conflit avec le geste de
+  // défilement tactile sur petit écran (bug WebKit connu sur iOS Safari en portrait).
+  // On les désactive en dessous de 640px : le tableau reste défilable normalement.
+  const [actives, setActives] = useState(
+    typeof window !== "undefined" ? window.innerWidth >= 640 : true
+  );
+  useEffect(() => {
+    const maj = () => setActives(window.innerWidth >= 640);
+    window.addEventListener("resize", maj);
+    return () => window.removeEventListener("resize", maj);
+  }, []);
+  return actives;
+}
+
 function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprimer }) {
+  const colonnesFigees = useColonnesFigees();
+  const figeDate = colonnesFigees ? styles.colFigeDate : {};
+  const figeClient = colonnesFigees ? styles.colFigeClient : {};
+  const figeVehicule = colonnesFigees ? styles.colFigeVehicule : {};
+
   if (dossiers.length === 0) {
     return <div style={styles.videEtat}>Aucun dossier enregistré pour ce filtre.</div>;
   }
@@ -786,9 +806,9 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
       <table style={styles.tableau}>
         <thead>
           <tr>
-            <th style={{ ...styles.th, ...styles.colFigeDate }}>Date</th>
-            <th style={{ ...styles.th, ...styles.colFigeClient }}>Client</th>
-            <th style={{ ...styles.th, ...styles.colFigeVehicule }}>Véhicule</th>
+            <th style={{ ...styles.th, ...figeDate }}>Date</th>
+            <th style={{ ...styles.th, ...figeClient }}>Client</th>
+            <th style={{ ...styles.th, ...figeVehicule }}>Véhicule</th>
             {estAdmin && <th style={styles.th}>Commercial</th>}
             {estAdmin && <th style={styles.th}>Entreprise</th>}
             <th style={{ ...styles.th, textAlign: "right" }}>Mandat total TTC</th>
@@ -805,9 +825,9 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
         <tbody>
           {dossiers.map((d) => (
             <tr key={d.id} style={styles.tr}>
-              <td style={{ ...styles.td, ...styles.colFigeDate }}>{new Date(d.date).toLocaleDateString("fr-FR")}</td>
-              <td style={{ ...styles.td, ...styles.colFigeClient }}>{d.client}</td>
-              <td style={{ ...styles.td, ...styles.colFigeVehicule }}>
+              <td style={{ ...styles.td, ...figeDate }}>{new Date(d.date).toLocaleDateString("fr-FR")}</td>
+              <td style={{ ...styles.td, ...figeClient }}>{d.client}</td>
+              <td style={{ ...styles.td, ...figeVehicule }}>
                 <div>{d.voiture}</div>
                 <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "#8B93A1" }}>
                   {d.plaque}

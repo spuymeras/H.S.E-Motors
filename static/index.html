@@ -44,7 +44,7 @@
 <script type="text/babel" data-type="module" data-presets="react">
 import React, { useState, useEffect, useCallback } from "react";
 import { createRoot } from "react-dom/client";
-import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck } from "lucide-react";
+import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search } from "lucide-react";
 
 // ---------- API ----------
 
@@ -79,6 +79,7 @@ export default function App() {
   const [commercialFiltre, setCommercialFiltre] = useState("tous");
   const [anneeFiltre, setAnneeFiltre] = useState("toutes");
   const [moisFiltre, setMoisFiltre] = useState("tous");
+  const [rechercheTexte, setRechercheTexte] = useState("");
   const [vue, setVue] = useState("dossiers");
   const [modalDossier, setModalDossier] = useState(null); // null | {} | dossier existant
   const [modalCommercial, setModalCommercial] = useState(null);
@@ -172,10 +173,16 @@ export default function App() {
 
   const anneesDisponibles = [...new Set(dossiersTous.map((d) => d.date.slice(0, 4)))].sort((a, b) => b.localeCompare(a));
 
+  const rechercheNormalisee = rechercheTexte.trim().toLowerCase();
+
   const dossiersAffiches = dossiers.filter((d) => {
     if (commercialFiltre !== "tous" && String(d.commercial_id) !== commercialFiltre) return false;
     if (anneeFiltre !== "toutes" && d.date.slice(0, 4) !== anneeFiltre) return false;
     if (moisFiltre !== "tous" && d.date.slice(5, 7) !== moisFiltre) return false;
+    if (rechercheNormalisee) {
+      const dansTexte = (valeur) => (valeur || "").toLowerCase().includes(rechercheNormalisee);
+      if (!dansTexte(d.client) && !dansTexte(d.voiture) && !dansTexte(d.plaque)) return false;
+    }
     return true;
   });
 
@@ -248,6 +255,21 @@ export default function App() {
               {!estAnimateur && (
                 <button style={styles.boutonAjout} onClick={() => setModalDossier({})}>
                   <Plus size={16} strokeWidth={2.5} /> Nouveau dossier
+                </button>
+              )}
+            </div>
+
+            <div style={styles.rechercheConteneur}>
+              <Search size={15} color="#8B93A1" />
+              <input
+                style={styles.rechercheInput}
+                value={rechercheTexte}
+                onChange={(e) => setRechercheTexte(e.target.value)}
+                placeholder="Rechercher par client, véhicule ou plaque…"
+              />
+              {rechercheTexte && (
+                <button style={styles.rechercheEffacer} onClick={() => setRechercheTexte("")} title="Effacer">
+                  <X size={14} />
                 </button>
               )}
             </div>
@@ -1390,6 +1412,15 @@ const styles = {
     color: "#E7E5E0", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif",
   },
   kpiRangee: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 32 },
+  rechercheConteneur: {
+    display: "flex", alignItems: "center", gap: 8, background: "#1C232D", border: "1px solid #2A323D",
+    borderRadius: 8, padding: "9px 14px", marginBottom: 14,
+  },
+  rechercheInput: {
+    flex: 1, background: "transparent", border: "none", outline: "none", color: "#E7E5E0",
+    fontSize: 13.5, fontFamily: "'Inter', sans-serif",
+  },
+  rechercheEffacer: { background: "transparent", border: "none", color: "#8B93A1", cursor: "pointer", display: "flex" },
   kpiCarte: { background: "#1C232D", border: "1px solid #2A323D", borderRadius: 12, padding: "18px 20px", display: "flex", alignItems: "center", gap: 14 },
   kpiCarteDeplacable: { cursor: "grab", userSelect: "none" },
   kpiCarteEnCoursDeplacement: { opacity: 0.4 },

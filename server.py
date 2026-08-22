@@ -9,6 +9,7 @@ from functools import wraps
 from pathlib import Path
 
 from flask import Flask, g, jsonify, request, send_from_directory, session
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 try:
@@ -28,6 +29,10 @@ DB_PATH = DATA_DIR / "app.db"
 SECRET_KEY_PATH = BASE_DIR / "secret.key"
 
 app = Flask(__name__, static_folder="static", static_url_path="")
+# Railway (et la plupart des hébergeurs) placent l'app derrière un proxy : sans ça,
+# request.remote_addr renverrait l'IP interne du proxy pour tout le monde, rendant
+# la limitation par IP inutile.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
 
 # En production, définissez la variable d'environnement SECRET_KEY (l'hébergeur la fournit
 # dans son tableau de bord). En local, une clé est générée une fois et stockée dans secret.key.
@@ -109,6 +114,15 @@ CREATE TABLE IF NOT EXISTS reinitialisations_mdp (
     code_hash TEXT NOT NULL,
     expire_le TEXT NOT NULL,
     utilise INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS tentatives (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,
+    identifiant TEXT,
+    ip TEXT NOT NULL,
+    reussi INTEGER NOT NULL,
+    horodatage TEXT NOT NULL
 );
 """
 
@@ -227,6 +241,45 @@ def seed(db):
     )
 
 
+# ---------- Protection contre les tentatives répétées ----------
+
+FENETRE_TENTATIVES_MINUTES = 15
+
+
+def trop_de_tentatives(db, action, identifiant, seuil_identifiant, seuil_ip):
+    limite = (datetime.utcnow() - timedelta(minutes=FENETRE_TENTATIVES_MINUTES)).isoformat()
+    ip = request.remote_addr or "inconnue"
+
+    if identifiant:
+        n = db.execute(
+            "SELECT COUNT(*) FROM tentatives WHERE action = ? AND identifiant = ? AND reussi = 0 AND horodatage > ?",
+            (action, identifiant, limite),
+        ).fetchone()[0]
+        if n >= seuil_identifiant:
+            return True
+
+    n_ip = db.execute(
+        "SELECT COUNT(*) FROM tentatives WHERE action = ? AND ip = ? AND reussi = 0 AND horodatage > ?",
+        (action, ip, limite),
+    ).fetchone()[0]
+    return n_ip >= seuil_ip
+
+
+def enregistrer_tentative(db, action, identifiant, reussi):
+    ip = request.remote_addr or "inconnue"
+    db.execute(
+        "INSERT INTO tentatives (action, identifiant, ip, reussi, horodatage) VALUES (?, ?, ?, ?, ?)",
+        (action, identifiant, ip, 1 if reussi else 0, datetime.utcnow().isoformat()),
+    )
+    # Ménage discret : évite que la table ne grossisse indéfiniment.
+    limite_nettoyage = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+    db.execute("DELETE FROM tentatives WHERE horodatage < ?", (limite_nettoyage,))
+
+
+def reponse_trop_de_tentatives():
+    return jsonify(error="Trop de tentatives. Réessayez dans quelques minutes."), 429
+
+
 # ---------- Auth helpers ----------
 
 def current_user():
@@ -311,13 +364,24 @@ def login():
     identifiant = (data.get("identifiant") or "").strip()
     mot_de_passe = data.get("mot_de_passe") or ""
     db = get_db()
+
+    if trop_de_tentatives(db, "login", identifiant, seuil_identifiant=5, seuil_ip=20):
+        return reponse_trop_de_tentatives()
+
     user = db.execute("SELECT * FROM utilisateurs WHERE identifiant = ?", (identifiant,)).fetchone()
     if user is None or not check_password_hash(user["password_hash"], mot_de_passe):
+        enregistrer_tentative(db, "login", identifiant, reussi=False)
+        db.commit()
         return jsonify(error="Identifiant ou mot de passe incorrect"), 401
     if user["role"] == "commercial":
         com = db.execute("SELECT actif FROM commerciaux WHERE id = ?", (user["commercial_id"],)).fetchone()
         if com is None or not com["actif"]:
+            enregistrer_tentative(db, "login", identifiant, reussi=False)
+            db.commit()
             return jsonify(error="Ce compte est désactivé"), 403
+
+    enregistrer_tentative(db, "login", identifiant, reussi=True)
+    db.commit()
     session.clear()
     session["uid"] = user["id"]
     session.permanent = True
@@ -361,6 +425,10 @@ def demander_code_recuperation():
     data = request.get_json(silent=True) or {}
     identifiant = (data.get("identifiant") or "").strip()
     db = get_db()
+
+    if trop_de_tentatives(db, "mot_de_passe_oublie", identifiant, seuil_identifiant=3, seuil_ip=10):
+        return reponse_trop_de_tentatives()
+
     user = db.execute(
         "SELECT * FROM utilisateurs WHERE identifiant = ? AND role = 'admin'", (identifiant,)
     ).fetchone()
@@ -369,6 +437,9 @@ def demander_code_recuperation():
     reponse_generique = jsonify(
         ok=True, message="Si ce compte existe, un code de récupération a été envoyé par email."
     )
+
+    enregistrer_tentative(db, "mot_de_passe_oublie", identifiant, reussi=user is not None)
+    db.commit()
 
     if user is None:
         return reponse_generique
@@ -400,10 +471,16 @@ def reinitialiser_mot_de_passe():
         return jsonify(error="Le nouveau mot de passe est requis"), 400
 
     db = get_db()
+
+    if trop_de_tentatives(db, "reinitialiser_mdp", identifiant, seuil_identifiant=5, seuil_ip=15):
+        return reponse_trop_de_tentatives()
+
     user = db.execute(
         "SELECT * FROM utilisateurs WHERE identifiant = ? AND role = 'admin'", (identifiant,)
     ).fetchone()
     if user is None:
+        enregistrer_tentative(db, "reinitialiser_mdp", identifiant, reussi=False)
+        db.commit()
         return jsonify(error="Code invalide ou expiré"), 400
 
     maintenant = datetime.utcnow().isoformat()
@@ -416,7 +493,11 @@ def reinitialiser_mot_de_passe():
 
     demande_valide = next((d for d in demandes if check_password_hash(d["code_hash"], code)), None)
     if demande_valide is None:
+        enregistrer_tentative(db, "reinitialiser_mdp", identifiant, reussi=False)
+        db.commit()
         return jsonify(error="Code invalide ou expiré"), 400
+
+    enregistrer_tentative(db, "reinitialiser_mdp", identifiant, reussi=True)
 
     db.execute(
         "UPDATE utilisateurs SET password_hash = ? WHERE id = ?",

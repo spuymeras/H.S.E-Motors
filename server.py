@@ -94,7 +94,8 @@ CREATE TABLE IF NOT EXISTS utilisateurs (
     role TEXT NOT NULL CHECK(role IN ('admin', 'commercial', 'animateur')),
     commercial_id INTEGER REFERENCES commerciaux(id),
     nom TEXT,
-    kpi_order TEXT
+    kpi_order TEXT,
+    kpi_reduits TEXT
 );
 
 CREATE TABLE IF NOT EXISTS dossiers (
@@ -147,6 +148,8 @@ def migrer_db(db):
         db.execute("ALTER TABLE utilisateurs ADD COLUMN nom TEXT")
     if "kpi_order" not in colonnes_utilisateurs:
         db.execute("ALTER TABLE utilisateurs ADD COLUMN kpi_order TEXT")
+    if "kpi_reduits" not in colonnes_utilisateurs:
+        db.execute("ALTER TABLE utilisateurs ADD COLUMN kpi_reduits TEXT")
 
     schema_utilisateurs = db.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'utilisateurs'"
@@ -161,10 +164,11 @@ def migrer_db(db):
                 role TEXT NOT NULL CHECK(role IN ('admin', 'commercial', 'animateur')),
                 commercial_id INTEGER REFERENCES commerciaux(id),
                 nom TEXT,
-                kpi_order TEXT
+                kpi_order TEXT,
+                kpi_reduits TEXT
             );
-            INSERT INTO utilisateurs_nouveau (id, identifiant, password_hash, role, commercial_id, nom, kpi_order)
-                SELECT id, identifiant, password_hash, role, commercial_id, nom, kpi_order FROM utilisateurs;
+            INSERT INTO utilisateurs_nouveau (id, identifiant, password_hash, role, commercial_id, nom, kpi_order, kpi_reduits)
+                SELECT id, identifiant, password_hash, role, commercial_id, nom, kpi_order, kpi_reduits FROM utilisateurs;
             DROP TABLE utilisateurs;
             ALTER TABLE utilisateurs_nouveau RENAME TO utilisateurs;
             """
@@ -343,9 +347,11 @@ def peut_tout_voir(user):
 
 
 def user_public(user, db):
-    # L'ordre des cartes KPI est une préférence personnelle : chaque compte
-    # (admin, commercial, animateur) a la sienne, stockée sur sa propre ligne.
+    # L'ordre et l'état réduit des cartes KPI sont des préférences personnelles :
+    # chaque compte (admin, commercial, animateur) a les siennes, stockées sur sa
+    # propre ligne.
     kpi_order = json.loads(user["kpi_order"]) if user["kpi_order"] else None
+    kpi_reduits = json.loads(user["kpi_reduits"]) if user["kpi_reduits"] else []
 
     if user["role"] == "admin":
         return {
@@ -354,6 +360,7 @@ def user_public(user, db):
             "nom": user["nom"] or "Administrateur",
             "identifiant": user["identifiant"],
             "kpi_order": kpi_order,
+            "kpi_reduits": kpi_reduits,
         }
     if user["role"] == "animateur":
         return {
@@ -362,6 +369,7 @@ def user_public(user, db):
             "nom": user["nom"] or "Animateur",
             "identifiant": user["identifiant"],
             "kpi_order": kpi_order,
+            "kpi_reduits": kpi_reduits,
         }
     com = db.execute("SELECT * FROM commerciaux WHERE id = ?", (user["commercial_id"],)).fetchone()
     return {
@@ -373,6 +381,7 @@ def user_public(user, db):
         "entreprise_id": com["entreprise_id"],
         "taux": com["taux"],
         "kpi_order": kpi_order,
+        "kpi_reduits": kpi_reduits,
     }
 
 
@@ -546,6 +555,20 @@ def sauvegarder_ordre_kpi():
     db.execute("UPDATE utilisateurs SET kpi_order = ? WHERE id = ?", (json.dumps(ordre), g.user["id"]))
     db.commit()
     return jsonify(ok=True, order=ordre)
+
+
+@app.put("/api/preferences/kpi-reduits")
+@login_required
+def sauvegarder_kpi_reduits():
+    data = request.get_json(silent=True) or {}
+    reduits = data.get("reduits")
+    if not isinstance(reduits, list) or not all(isinstance(x, str) for x in reduits):
+        return jsonify(error="Format invalide"), 400
+
+    db = get_db()
+    db.execute("UPDATE utilisateurs SET kpi_reduits = ? WHERE id = ?", (json.dumps(reduits), g.user["id"]))
+    db.commit()
+    return jsonify(ok=True, reduits=reduits)
 
 
 # ---------- Routes: entreprises ----------

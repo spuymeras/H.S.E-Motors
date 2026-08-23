@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS commerciaux (
     nom TEXT NOT NULL,
     entreprise_id INTEGER NOT NULL REFERENCES entreprises(id),
     taux REAL,
-    actif INTEGER NOT NULL DEFAULT 1
+    actif INTEGER NOT NULL DEFAULT 1,
+    objectif_ca_ht_brut REAL
 );
 
 CREATE TABLE IF NOT EXISTS utilisateurs (
@@ -131,6 +132,10 @@ def migrer_db(db):
     colonnes = {row["name"] for row in db.execute("PRAGMA table_info(dossiers)")}
     if "frais_intermediation" not in colonnes:
         db.execute("ALTER TABLE dossiers ADD COLUMN frais_intermediation REAL NOT NULL DEFAULT 0")
+
+    colonnes_commerciaux = {row["name"] for row in db.execute("PRAGMA table_info(commerciaux)")}
+    if "objectif_ca_ht_brut" not in colonnes_commerciaux:
+        db.execute("ALTER TABLE commerciaux ADD COLUMN objectif_ca_ht_brut REAL")
 
     colonnes_utilisateurs = {row["name"] for row in db.execute("PRAGMA table_info(utilisateurs)")}
     if "nom" not in colonnes_utilisateurs:
@@ -605,6 +610,14 @@ def ca_ht_net_mensuel(db, commercial_id, mois):
     return sum(total_ht_ligne(r) for r in rows)
 
 
+def ca_ht_brut_mensuel(db, commercial_id, mois):
+    total = db.execute(
+        "SELECT COALESCE(SUM(mandat_total), 0) FROM dossiers WHERE commercial_id = ? AND substr(date, 1, 7) = ?",
+        (commercial_id, mois),
+    ).fetchone()[0]
+    return total / 1.2
+
+
 def taux_automatique(db, commercial_id, mois):
     ca = ca_ht_net_mensuel(db, commercial_id, mois)
     return TAUX_AUTO_HAUT if ca > SEUIL_TAUX_AUTO else TAUX_AUTO_BAS
@@ -618,6 +631,9 @@ def taux_effectif(db, com, mois):
 
 def commercial_dict(row, db):
     mois_courant = datetime.utcnow().strftime("%Y-%m")
+    ca_ht_brut_mois = ca_ht_brut_mensuel(db, row["id"], mois_courant)
+    objectif = row["objectif_ca_ht_brut"]
+    pourcentage_atteinte = (ca_ht_brut_mois / objectif * 100) if objectif else None
     return {
         "id": row["id"],
         "nom": row["nom"],
@@ -626,6 +642,9 @@ def commercial_dict(row, db):
         "taux_auto": row["taux"] is None,
         "taux_effectif": taux_effectif(db, row, mois_courant),
         "actif": bool(row["actif"]),
+        "objectif_ca_ht_brut": objectif,
+        "ca_ht_brut_mois_courant": ca_ht_brut_mois,
+        "pourcentage_atteinte": pourcentage_atteinte,
     }
 
 
@@ -650,6 +669,19 @@ def parser_taux_optionnel(data):
         return None, "Taux invalide"
 
 
+def parser_objectif_optionnel(data):
+    """Retourne (objectif, erreur). objectif est None si absent/vide (pas d'objectif défini)."""
+    if "objectif_ca_ht_brut" not in data or data["objectif_ca_ht_brut"] in (None, ""):
+        return None, None
+    try:
+        valeur = float(data["objectif_ca_ht_brut"])
+    except (TypeError, ValueError):
+        return None, "Objectif invalide"
+    if valeur <= 0:
+        return None, "Objectif invalide"
+    return valeur, None
+
+
 @app.post("/api/commerciaux")
 @admin_required
 def create_commercial():
@@ -665,6 +697,9 @@ def create_commercial():
     taux, erreur = parser_taux_optionnel(data)
     if erreur:
         return jsonify(error=erreur), 400
+    objectif, erreur = parser_objectif_optionnel(data)
+    if erreur:
+        return jsonify(error=erreur), 400
 
     db = get_db()
     if db.execute("SELECT 1 FROM utilisateurs WHERE identifiant = ?", (identifiant,)).fetchone():
@@ -673,8 +708,8 @@ def create_commercial():
         return jsonify(error="Entreprise inconnue"), 400
 
     cur = db.execute(
-        "INSERT INTO commerciaux (nom, entreprise_id, taux) VALUES (?, ?, ?)",
-        (nom, entreprise_id, taux),
+        "INSERT INTO commerciaux (nom, entreprise_id, taux, objectif_ca_ht_brut) VALUES (?, ?, ?, ?)",
+        (nom, entreprise_id, taux, objectif),
     )
     commercial_id = cur.lastrowid
     db.execute(
@@ -706,14 +741,21 @@ def update_commercial(commercial_id):
     else:
         taux = row["taux"]
 
+    if "objectif_ca_ht_brut" in data:
+        objectif, erreur = parser_objectif_optionnel(data)
+        if erreur:
+            return jsonify(error=erreur), 400
+    else:
+        objectif = row["objectif_ca_ht_brut"]
+
     if not db.execute("SELECT 1 FROM entreprises WHERE id = ?", (entreprise_id,)).fetchone():
         return jsonify(error="Entreprise inconnue"), 400
 
     nouveau_mot_de_passe = (data.get("mot_de_passe") or "").strip()
 
     db.execute(
-        "UPDATE commerciaux SET nom = ?, taux = ?, actif = ?, entreprise_id = ? WHERE id = ?",
-        (nom, taux, 1 if actif else 0, entreprise_id, commercial_id),
+        "UPDATE commerciaux SET nom = ?, taux = ?, actif = ?, entreprise_id = ?, objectif_ca_ht_brut = ? WHERE id = ?",
+        (nom, taux, 1 if actif else 0, entreprise_id, objectif, commercial_id),
     )
     if nouveau_mot_de_passe:
         db.execute(

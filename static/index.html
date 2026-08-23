@@ -45,7 +45,7 @@
 <script type="text/babel" data-type="module" data-presets="react">
 import React, { useState, useEffect, useCallback } from "react";
 import { createRoot } from "react-dom/client";
-import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw } from "lucide-react";
+import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw, Target } from "lucide-react";
 
 // ---------- API ----------
 
@@ -199,6 +199,15 @@ export default function App() {
     return true;
   });
 
+  // Le KPI d'atteinte d'objectif n'a de sens que pour un seul commercial à la fois :
+  // soit c'est le compte connecté, soit l'admin/animateur a filtré sur une personne précise.
+  let commercialCible = null;
+  if (utilisateur.role === "commercial") {
+    commercialCible = commerciaux.find((c) => c.id === utilisateur.commercial_id) || null;
+  } else if (peutToutVoir && commercialFiltre !== "tous") {
+    commercialCible = commerciaux.find((c) => String(c.id) === commercialFiltre) || null;
+  }
+
   return (
     <div style={styles.page}>
       <TickerBandeau entreprises={entreprises} dossiers={dossiersTous} />
@@ -266,6 +275,7 @@ export default function App() {
               peutReorganiser={true}
               kpiOrder={kpiOrder}
               onReorder={reorganiserKpis}
+              commercialCible={commercialCible}
             />
 
             <div style={styles.sectionHeader}>
@@ -728,7 +738,7 @@ function FiltrePeriode({ anneesDisponibles, anneeFiltre, setAnneeFiltre, moisFil
 
 const GARANTIE_ACHAT_NON_VENDUE = [90.15, 86.15];
 
-function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder }) {
+function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, commercialCible }) {
   const chiffreAffairesHT = dossiers.reduce((s, d) => s + d.total_ht, 0);
   const caTtc = dossiers.reduce((s, d) => s + d.mandat_total, 0);
   const caHtBrut = dossiers.reduce((s, d) => s + d.mandat_total / 1.2, 0);
@@ -767,6 +777,18 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder })
     { id: "mandat_moyen", label: "Mandat moyen", valeur: fmtEUR(mandatMoyen), icone: TrendingUp, couleur: "#E8A33D" },
     ...(estAdmin
       ? [{ id: "achat_garantie", label: "Achat garantie", valeur: fmtEUR(achatGarantie), icone: TrendingUp, couleur: "#8B93A1" }]
+      : []),
+    ...(commercialCible && commercialCible.objectif_ca_ht_brut != null
+      ? [{
+          id: "objectif_atteinte",
+          label: `Objectif du mois (${fmtEUR(commercialCible.objectif_ca_ht_brut)})`,
+          valeur: `${commercialCible.pourcentage_atteinte.toFixed(0)}%`,
+          icone: Target,
+          couleur:
+            commercialCible.pourcentage_atteinte >= 100 ? "#4FD1C5"
+            : commercialCible.pourcentage_atteinte >= 50 ? "#E8A33D"
+            : "#E8746B",
+        }]
       : []),
   ];
 
@@ -1096,6 +1118,7 @@ function EquipeEtEntreprises({
               <th style={styles.th}>Nom</th>
               <th style={styles.th}>Entreprise</th>
               <th style={{ ...styles.th, textAlign: "right" }}>Taux de commission</th>
+              <th style={{ ...styles.th, textAlign: "right" }}>Objectif du mois</th>
               <th style={styles.th}>Statut</th>
               {estAdmin && <th style={styles.th}></th>}
             </tr>
@@ -1108,6 +1131,9 @@ function EquipeEtEntreprises({
                 <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>
                   {(c.taux_effectif * 100).toFixed(1)}%
                   {c.taux_auto && <span style={styles.puceAuto}> auto</span>}
+                </td>
+                <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>
+                  {c.objectif_ca_ht_brut != null ? `${c.pourcentage_atteinte.toFixed(0)}%` : "—"}
                 </td>
                 <td style={styles.td}>
                   <span style={{ color: c.actif ? "#4FD1C5" : "#8B93A1" }}>{c.actif ? "Actif" : "Désactivé"}</span>
@@ -1239,6 +1265,7 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
   const [entrepriseId, setEntrepriseId] = useState(commercial.entreprise_id || entreprises[0]?.id);
   const [tauxAuto, setTauxAuto] = useState(estEdition ? Boolean(commercial.taux_auto) : true);
   const [taux, setTaux] = useState(commercial.taux != null ? commercial.taux * 100 : "");
+  const [objectif, setObjectif] = useState(commercial.objectif_ca_ht_brut ?? "");
   const [actif, setActif] = useState(commercial.actif ?? true);
   const [identifiant, setIdentifiant] = useState("");
   const [motDePasse, setMotDePasse] = useState("");
@@ -1287,6 +1314,23 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
           </label>
         )}
 
+        <label style={styles.champLabel}>
+          Objectif CA HT brut mensuel (€)
+          <input
+            style={styles.input}
+            type="number"
+            value={objectif}
+            onChange={(e) => setObjectif(e.target.value)}
+            placeholder="Aucun objectif défini"
+          />
+        </label>
+        {estEdition && commercial.objectif_ca_ht_brut != null && (
+          <div style={styles.tauxAutoAide}>
+            Ce mois-ci : {fmtEUR(commercial.ca_ht_brut_mois_courant)} sur {fmtEUR(commercial.objectif_ca_ht_brut)}
+            {" — "}<strong>{commercial.pourcentage_atteinte.toFixed(0)}%</strong>
+          </div>
+        )}
+
         {estEdition && (
           <label style={styles.champLabel}>
             <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1318,11 +1362,13 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
                 ? {
                     id: commercial.id, nom, entreprise_id: entrepriseId,
                     taux: tauxAuto ? null : Number(taux) / 100,
+                    objectif_ca_ht_brut: objectif === "" ? null : Number(objectif),
                     actif, mot_de_passe: motDePasse,
                   }
                 : {
                     nom, entreprise_id: entrepriseId,
                     taux: tauxAuto ? null : Number(taux) / 100,
+                    objectif_ca_ht_brut: objectif === "" ? null : Number(objectif),
                     identifiant, mot_de_passe: motDePasse,
                   }
             )

@@ -74,7 +74,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS entreprises (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     nom TEXT NOT NULL,
-    couleur TEXT NOT NULL
+    couleur TEXT NOT NULL,
+    objectif_ca_ht_brut REAL
 );
 
 CREATE TABLE IF NOT EXISTS commerciaux (
@@ -136,6 +137,10 @@ def migrer_db(db):
     colonnes_commerciaux = {row["name"] for row in db.execute("PRAGMA table_info(commerciaux)")}
     if "objectif_ca_ht_brut" not in colonnes_commerciaux:
         db.execute("ALTER TABLE commerciaux ADD COLUMN objectif_ca_ht_brut REAL")
+
+    colonnes_entreprises = {row["name"] for row in db.execute("PRAGMA table_info(entreprises)")}
+    if "objectif_ca_ht_brut" not in colonnes_entreprises:
+        db.execute("ALTER TABLE entreprises ADD COLUMN objectif_ca_ht_brut REAL")
 
     colonnes_utilisateurs = {row["name"] for row in db.execute("PRAGMA table_info(utilisateurs)")}
     if "nom" not in colonnes_utilisateurs:
@@ -545,12 +550,27 @@ def sauvegarder_ordre_kpi():
 
 # ---------- Routes: entreprises ----------
 
+def entreprise_dict(row, db):
+    mois_courant = datetime.utcnow().strftime("%Y-%m")
+    ca_ht_brut_mois = ca_ht_brut_mensuel_entreprise(db, row["id"], mois_courant)
+    objectif = row["objectif_ca_ht_brut"]
+    pourcentage_atteinte = (ca_ht_brut_mois / objectif * 100) if objectif else None
+    return {
+        "id": row["id"],
+        "nom": row["nom"],
+        "couleur": row["couleur"],
+        "objectif_ca_ht_brut": objectif,
+        "ca_ht_brut_mois_courant": ca_ht_brut_mois,
+        "pourcentage_atteinte": pourcentage_atteinte,
+    }
+
+
 @app.get("/api/entreprises")
 @login_required
 def list_entreprises():
     db = get_db()
     rows = db.execute("SELECT * FROM entreprises ORDER BY nom").fetchall()
-    return jsonify([dict(r) for r in rows])
+    return jsonify([entreprise_dict(r, db) for r in rows])
 
 
 @app.post("/api/entreprises")
@@ -561,13 +581,19 @@ def create_entreprise():
     couleur = (data.get("couleur") or "#8B93A1").strip()
     if not nom:
         return jsonify(error="Le nom est requis"), 400
+    objectif, erreur = parser_objectif_optionnel(data)
+    if erreur:
+        return jsonify(error=erreur), 400
     db = get_db()
     count = db.execute("SELECT COUNT(*) FROM entreprises").fetchone()[0]
     if count >= 5:
         return jsonify(error="Limite de 5 entreprises atteinte"), 400
-    cur = db.execute("INSERT INTO entreprises (nom, couleur) VALUES (?, ?)", (nom, couleur))
+    cur = db.execute(
+        "INSERT INTO entreprises (nom, couleur, objectif_ca_ht_brut) VALUES (?, ?, ?)", (nom, couleur, objectif)
+    )
     db.commit()
-    return jsonify(id=cur.lastrowid, nom=nom, couleur=couleur), 201
+    row = db.execute("SELECT * FROM entreprises WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify(entreprise_dict(row, db)), 201
 
 
 @app.put("/api/entreprises/<int:entreprise_id>")
@@ -584,9 +610,20 @@ def update_entreprise(entreprise_id):
     if not nom:
         return jsonify(error="Le nom est requis"), 400
 
-    db.execute("UPDATE entreprises SET nom = ?, couleur = ? WHERE id = ?", (nom, couleur, entreprise_id))
+    if "objectif_ca_ht_brut" in data:
+        objectif, erreur = parser_objectif_optionnel(data)
+        if erreur:
+            return jsonify(error=erreur), 400
+    else:
+        objectif = row["objectif_ca_ht_brut"]
+
+    db.execute(
+        "UPDATE entreprises SET nom = ?, couleur = ?, objectif_ca_ht_brut = ? WHERE id = ?",
+        (nom, couleur, objectif, entreprise_id),
+    )
     db.commit()
-    return jsonify(id=entreprise_id, nom=nom, couleur=couleur)
+    row = db.execute("SELECT * FROM entreprises WHERE id = ?", (entreprise_id,)).fetchone()
+    return jsonify(entreprise_dict(row, db))
 
 
 # ---------- Routes: commerciaux ----------
@@ -614,6 +651,16 @@ def ca_ht_brut_mensuel(db, commercial_id, mois):
     total = db.execute(
         "SELECT COALESCE(SUM(mandat_total), 0) FROM dossiers WHERE commercial_id = ? AND substr(date, 1, 7) = ?",
         (commercial_id, mois),
+    ).fetchone()[0]
+    return total / 1.2
+
+
+def ca_ht_brut_mensuel_entreprise(db, entreprise_id, mois):
+    total = db.execute(
+        """SELECT COALESCE(SUM(d.mandat_total), 0) FROM dossiers d
+           JOIN commerciaux c ON c.id = d.commercial_id
+           WHERE c.entreprise_id = ? AND substr(d.date, 1, 7) = ?""",
+        (entreprise_id, mois),
     ).fetchone()[0]
     return total / 1.2
 

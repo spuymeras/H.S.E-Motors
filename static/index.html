@@ -45,7 +45,7 @@
 <script type="text/babel" data-type="module" data-presets="react">
 import React, { useState, useEffect, useCallback } from "react";
 import { createRoot } from "react-dom/client";
-import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw, Target } from "lucide-react";
+import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw, Target, Building2 } from "lucide-react";
 
 // ---------- API ----------
 
@@ -208,6 +208,13 @@ export default function App() {
     commercialCible = commerciaux.find((c) => String(c.id) === commercialFiltre) || null;
   }
 
+  // Objectif par entreprise : réservé à l'admin, uniquement quand une seule
+  // entreprise est sélectionnée dans le filtre.
+  const entrepriseCible =
+    estAdmin && entrepriseFiltre !== "toutes"
+      ? entreprises.find((e) => String(e.id) === String(entrepriseFiltre)) || null
+      : null;
+
   return (
     <div style={styles.page}>
       <TickerBandeau entreprises={entreprises} dossiers={dossiersTous} />
@@ -276,6 +283,7 @@ export default function App() {
               kpiOrder={kpiOrder}
               onReorder={reorganiserKpis}
               commercialCible={commercialCible}
+              entrepriseCible={entrepriseCible}
             />
 
             <div style={styles.sectionHeader}>
@@ -738,7 +746,7 @@ function FiltrePeriode({ anneesDisponibles, anneeFiltre, setAnneeFiltre, moisFil
 
 const GARANTIE_ACHAT_NON_VENDUE = [90.15, 86.15];
 
-function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, commercialCible }) {
+function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, commercialCible, entrepriseCible }) {
   const chiffreAffairesHT = dossiers.reduce((s, d) => s + d.total_ht, 0);
   const caTtc = dossiers.reduce((s, d) => s + d.mandat_total, 0);
   const caHtBrut = dossiers.reduce((s, d) => s + d.mandat_total / 1.2, 0);
@@ -787,6 +795,18 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
           couleur:
             commercialCible.pourcentage_atteinte >= 100 ? "#4FD1C5"
             : commercialCible.pourcentage_atteinte >= 50 ? "#E8A33D"
+            : "#E8746B",
+        }]
+      : []),
+    ...(entrepriseCible && entrepriseCible.objectif_ca_ht_brut != null
+      ? [{
+          id: "objectif_entreprise_atteinte",
+          label: `Objectif entreprise du mois (${fmtEUR(entrepriseCible.objectif_ca_ht_brut)})`,
+          valeur: `${entrepriseCible.pourcentage_atteinte.toFixed(0)}%`,
+          icone: Building2,
+          couleur:
+            entrepriseCible.pourcentage_atteinte >= 100 ? "#4FD1C5"
+            : entrepriseCible.pourcentage_atteinte >= 50 ? "#E8A33D"
             : "#E8746B",
         }]
       : []),
@@ -1385,6 +1405,7 @@ function ModalEntreprise({ entreprise, onFermer, onValider }) {
   const estEdition = Boolean(entreprise.id);
   const [nom, setNom] = useState(entreprise.nom || "");
   const [couleur, setCouleur] = useState(entreprise.couleur || "#4FD1C5");
+  const [objectif, setObjectif] = useState(entreprise.objectif_ca_ht_brut ?? "");
   const valide = nom.trim() !== "";
 
   return (
@@ -1405,10 +1426,30 @@ function ModalEntreprise({ entreprise, onFermer, onValider }) {
           <input style={{ ...styles.input, height: 40, padding: 4 }} type="color" value={couleur} onChange={(e) => setCouleur(e.target.value)} />
         </label>
 
+        <label style={styles.champLabel}>
+          Objectif CA HT brut mensuel (€)
+          <input
+            style={styles.input}
+            type="number"
+            value={objectif}
+            onChange={(e) => setObjectif(e.target.value)}
+            placeholder="Aucun objectif défini"
+          />
+        </label>
+        {estEdition && entreprise.objectif_ca_ht_brut != null && (
+          <div style={styles.tauxAutoAide}>
+            Ce mois-ci : {fmtEUR(entreprise.ca_ht_brut_mois_courant)} sur {fmtEUR(entreprise.objectif_ca_ht_brut)}
+            {" — "}<strong>{entreprise.pourcentage_atteinte.toFixed(0)}%</strong>
+          </div>
+        )}
+
         <button
           style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}
           disabled={!valide}
-          onClick={() => valide && onValider({ id: entreprise.id, nom, couleur })}
+          onClick={() =>
+            valide &&
+            onValider({ id: entreprise.id, nom, couleur, objectif_ca_ht_brut: objectif === "" ? null : Number(objectif) })
+          }
         >
           {estEdition ? "Enregistrer les modifications" : "Créer l'entreprise"}
         </button>

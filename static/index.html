@@ -215,6 +215,17 @@ export default function App() {
       ? entreprises.find((e) => String(e.id) === String(entrepriseFiltre)) || null
       : null;
 
+  // Objectif global : somme des objectifs (et des réalisés du mois) de toutes les
+  // entreprises qui en ont un défini — uniquement sur "Toutes les entreprises".
+  const entreprisesAvecObjectif = entreprises.filter((e) => e.objectif_ca_ht_brut != null);
+  const objectifGlobalEntreprises =
+    estAdmin && entrepriseFiltre === "toutes" && entreprisesAvecObjectif.length > 0
+      ? {
+          objectif: entreprisesAvecObjectif.reduce((s, e) => s + e.objectif_ca_ht_brut, 0),
+          reel: entreprisesAvecObjectif.reduce((s, e) => s + e.ca_ht_brut_mois_courant, 0),
+        }
+      : null;
+
   return (
     <div style={styles.page}>
       <TickerBandeau entreprises={entreprises} dossiers={dossiersTous} />
@@ -284,6 +295,7 @@ export default function App() {
               onReorder={reorganiserKpis}
               commercialCible={commercialCible}
               entrepriseCible={entrepriseCible}
+              objectifGlobalEntreprises={objectifGlobalEntreprises}
             />
 
             <div style={styles.sectionHeader}>
@@ -746,7 +758,7 @@ function FiltrePeriode({ anneesDisponibles, anneeFiltre, setAnneeFiltre, moisFil
 
 const GARANTIE_ACHAT_NON_VENDUE = [90.15, 86.15];
 
-function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, commercialCible, entrepriseCible }) {
+function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, commercialCible, entrepriseCible, objectifGlobalEntreprises }) {
   const chiffreAffairesHT = dossiers.reduce((s, d) => s + d.total_ht, 0);
   const caTtc = dossiers.reduce((s, d) => s + d.mandat_total, 0);
   const caHtBrut = dossiers.reduce((s, d) => s + d.mandat_total / 1.2, 0);
@@ -809,6 +821,18 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
             : entrepriseCible.pourcentage_atteinte >= 50 ? "#E8A33D"
             : "#E8746B",
         }]
+      : []),
+    ...(objectifGlobalEntreprises
+      ? (() => {
+          const pct = (objectifGlobalEntreprises.reel / objectifGlobalEntreprises.objectif) * 100;
+          return [{
+            id: "objectif_global_entreprises",
+            label: `Objectif global du mois (${fmtEUR(objectifGlobalEntreprises.objectif)})`,
+            valeur: `${pct.toFixed(0)}%`,
+            icone: Building2,
+            couleur: pct >= 100 ? "#4FD1C5" : pct >= 50 ? "#E8A33D" : "#E8746B",
+          }];
+        })()
       : []),
   ];
 

@@ -127,6 +127,14 @@ CREATE TABLE IF NOT EXISTS tentatives (
     reussi INTEGER NOT NULL,
     horodatage TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS avis_google (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    commercial_id INTEGER NOT NULL REFERENCES commerciaux(id),
+    mois TEXT NOT NULL,
+    avis_obtenus INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(commercial_id, mois)
+);
 """
 
 
@@ -655,6 +663,11 @@ SEUIL_TAUX_AUTO = 8000.0
 TAUX_AUTO_BAS = 0.20
 TAUX_AUTO_HAUT = 0.35
 
+# Bonus avis Google : +5% de commission si le commercial obtient au moins un avis
+# par voiture vendue dans le mois. Ne s'applique qu'au taux automatique (20/35%) —
+# un taux personnalisé à la main n'en bénéficie pas, l'admin l'ajuste lui-même si besoin.
+BONUS_AVIS_GOOGLE = 0.05
+
 
 def total_ht_ligne(row):
     tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 0.18
@@ -688,9 +701,35 @@ def ca_ht_brut_mensuel_entreprise(db, entreprise_id, mois):
     return total / 1.2
 
 
+def nb_voitures_vendues_mensuel(db, commercial_id, mois):
+    return db.execute(
+        "SELECT COUNT(*) FROM dossiers WHERE commercial_id = ? AND substr(date, 1, 7) = ?",
+        (commercial_id, mois),
+    ).fetchone()[0]
+
+
+def avis_obtenus_mensuel(db, commercial_id, mois):
+    row = db.execute(
+        "SELECT avis_obtenus FROM avis_google WHERE commercial_id = ? AND mois = ?",
+        (commercial_id, mois),
+    ).fetchone()
+    return row["avis_obtenus"] if row else 0
+
+
+def bonus_avis_actif(db, commercial_id, mois):
+    """Objectif = 1 avis par voiture vendue dans le mois."""
+    objectif = nb_voitures_vendues_mensuel(db, commercial_id, mois)
+    if objectif <= 0:
+        return False
+    return avis_obtenus_mensuel(db, commercial_id, mois) >= objectif
+
+
 def taux_automatique(db, commercial_id, mois):
     ca = ca_ht_net_mensuel(db, commercial_id, mois)
-    return TAUX_AUTO_HAUT if ca > SEUIL_TAUX_AUTO else TAUX_AUTO_BAS
+    base = TAUX_AUTO_HAUT if ca > SEUIL_TAUX_AUTO else TAUX_AUTO_BAS
+    if bonus_avis_actif(db, commercial_id, mois):
+        base += BONUS_AVIS_GOOGLE
+    return base
 
 
 def taux_effectif(db, com, mois):
@@ -704,6 +743,7 @@ def commercial_dict(row, db):
     ca_ht_brut_mois = ca_ht_brut_mensuel(db, row["id"], mois_courant)
     objectif = row["objectif_ca_ht_brut"]
     pourcentage_atteinte = (ca_ht_brut_mois / objectif * 100) if objectif else None
+    objectif_avis = nb_voitures_vendues_mensuel(db, row["id"], mois_courant)
     return {
         "id": row["id"],
         "nom": row["nom"],
@@ -715,6 +755,9 @@ def commercial_dict(row, db):
         "objectif_ca_ht_brut": objectif,
         "ca_ht_brut_mois_courant": ca_ht_brut_mois,
         "pourcentage_atteinte": pourcentage_atteinte,
+        "avis_obtenus_mois_courant": avis_obtenus_mensuel(db, row["id"], mois_courant),
+        "objectif_avis_mois_courant": objectif_avis,
+        "bonus_avis_actif": bonus_avis_actif(db, row["id"], mois_courant),
     }
 
 
@@ -831,6 +874,19 @@ def update_commercial(commercial_id):
         db.execute(
             "UPDATE utilisateurs SET password_hash = ? WHERE commercial_id = ?",
             (generate_password_hash(nouveau_mot_de_passe, method="pbkdf2:sha256"), commercial_id),
+        )
+    if "avis_obtenus" in data:
+        try:
+            avis_obtenus = int(data["avis_obtenus"])
+        except (TypeError, ValueError):
+            return jsonify(error="Nombre d'avis invalide"), 400
+        if avis_obtenus < 0:
+            return jsonify(error="Nombre d'avis invalide"), 400
+        mois_courant = datetime.utcnow().strftime("%Y-%m")
+        db.execute(
+            """INSERT INTO avis_google (commercial_id, mois, avis_obtenus) VALUES (?, ?, ?)
+               ON CONFLICT(commercial_id, mois) DO UPDATE SET avis_obtenus = excluded.avis_obtenus""",
+            (commercial_id, mois_courant, avis_obtenus),
         )
     db.commit()
     row = db.execute("SELECT * FROM commerciaux WHERE id = ?", (commercial_id,)).fetchone()

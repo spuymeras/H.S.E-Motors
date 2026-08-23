@@ -45,7 +45,7 @@
 <script type="text/babel" data-type="module" data-presets="react">
 import React, { useState, useEffect, useCallback } from "react";
 import { createRoot } from "react-dom/client";
-import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw, Target, Building2, Minimize2, Maximize2 } from "lucide-react";
+import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw, Target, Building2, Minimize2, Maximize2, Star } from "lucide-react";
 
 // ---------- API ----------
 
@@ -826,6 +826,17 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
             : "#E8746B",
         }]
       : []),
+    ...(commercialCible
+      ? [{
+          id: "bonus_avis_google",
+          label: commercialCible.bonus_avis_actif
+            ? `Bonus avis Google obtenu (${commercialCible.avis_obtenus_mois_courant}/${commercialCible.objectif_avis_mois_courant} avis)`
+            : `Bonus avis Google si atteint (${commercialCible.avis_obtenus_mois_courant}/${commercialCible.objectif_avis_mois_courant} avis)`,
+          valeur: fmtEUR(chiffreAffairesHT * 0.05),
+          icone: Star,
+          couleur: commercialCible.bonus_avis_actif ? "#4FD1C5" : "#8B93A1",
+        }]
+      : []),
     ...(entrepriseCible && entrepriseCible.objectif_ca_ht_brut != null
       ? [{
           id: "objectif_entreprise_atteinte",
@@ -1350,6 +1361,7 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
   const [actif, setActif] = useState(commercial.actif ?? true);
   const [identifiant, setIdentifiant] = useState("");
   const [motDePasse, setMotDePasse] = useState("");
+  const [avisObtenus, setAvisObtenus] = useState(commercial.avis_obtenus_mois_courant ?? 0);
 
   const valide = estEdition
     ? nom.trim() !== "" && (tauxAuto || Number(taux) > 0)
@@ -1382,7 +1394,7 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
           </span>
         </label>
         <div style={styles.tauxAutoAide}>
-          CA HT net du mois ≤ 8 000 € → 20% · &gt; 8 000 € → 35%
+          CA HT net du mois ≤ 8 000 € → 20% · &gt; 8 000 € → 35% · +5% si l'objectif d'avis Google est atteint
           {estEdition && (
             <> — actuellement <strong>{(commercial.taux_effectif * 100).toFixed(1)}%</strong></>
           )}
@@ -1409,6 +1421,27 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
           <div style={styles.tauxAutoAide}>
             Ce mois-ci : {fmtEUR(commercial.ca_ht_brut_mois_courant)} sur {fmtEUR(commercial.objectif_ca_ht_brut)}
             {" — "}<strong>{commercial.pourcentage_atteinte.toFixed(0)}%</strong>
+          </div>
+        )}
+
+        {estEdition && (
+          <label style={styles.champLabel}>
+            Avis Google obtenus ce mois-ci
+            <input
+              style={styles.input}
+              type="number"
+              step="1"
+              min="0"
+              value={avisObtenus}
+              onChange={(e) => setAvisObtenus(e.target.value)}
+            />
+          </label>
+        )}
+        {estEdition && (
+          <div style={styles.tauxAutoAide}>
+            Objectif du mois : {commercial.objectif_avis_mois_courant} avis (1 par voiture vendue)
+            {" — "}
+            <strong>{commercial.bonus_avis_actif ? "bonus obtenu" : "bonus non obtenu"}</strong>
           </div>
         )}
 
@@ -1445,6 +1478,7 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
                     taux: tauxAuto ? null : Number(taux) / 100,
                     objectif_ca_ht_brut: objectif === "" ? null : Number(objectif),
                     actif, mot_de_passe: motDePasse,
+                    avis_obtenus: avisObtenus === "" ? 0 : Number(avisObtenus),
                   }
                 : {
                     nom, entreprise_id: entrepriseId,

@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import smtplib
@@ -8,7 +9,9 @@ from email.mime.text import MIMEText
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, g, jsonify, request, send_from_directory, session
+from flask import Flask, Response, g, jsonify, request, send_from_directory, session
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -108,7 +111,8 @@ CREATE TABLE IF NOT EXISTS dossiers (
     garantie_achat REAL NOT NULL DEFAULT 0,
     garantie_prix_vendu REAL NOT NULL DEFAULT 0,
     mandat_total REAL NOT NULL DEFAULT 0,
-    frais_intermediation REAL NOT NULL DEFAULT 0
+    frais_intermediation REAL NOT NULL DEFAULT 0,
+    exporte_excel_le TEXT
 );
 
 CREATE TABLE IF NOT EXISTS reinitialisations_mdp (
@@ -142,6 +146,8 @@ def migrer_db(db):
     colonnes = {row["name"] for row in db.execute("PRAGMA table_info(dossiers)")}
     if "frais_intermediation" not in colonnes:
         db.execute("ALTER TABLE dossiers ADD COLUMN frais_intermediation REAL NOT NULL DEFAULT 0")
+    if "exporte_excel_le" not in colonnes:
+        db.execute("ALTER TABLE dossiers ADD COLUMN exporte_excel_le TEXT")
 
     colonnes_commerciaux = {row["name"] for row in db.execute("PRAGMA table_info(commerciaux)")}
     if "objectif_ca_ht_brut" not in colonnes_commerciaux:
@@ -1096,6 +1102,129 @@ def delete_dossier(dossier_id):
     db.execute("DELETE FROM dossiers WHERE id = ?", (dossier_id,))
     db.commit()
     return jsonify(ok=True)
+
+
+# ---------- Routes: export Excel ----------
+#
+# Le fichier généré reproduit la structure du tableau de suivi papier/Excel
+# existant (une feuille par commercial, colonnes VOITURE/PLAQUE/NOM/FRAIS
+# INTER/MOYEN DE PAIEMENT/DATE/MONTANT CASHSENTINEL aux mêmes positions),
+# afin qu'un copier-coller depuis ce fichier s'aligne directement dans le
+# tableau réel. "MOYEN DE PAIEMENT" n'est pas suivi par l'app : la colonne
+# reste vide, à compléter à la main. C'est un NOUVEAU fichier à chaque fois
+# (l'app ne touche jamais le fichier de suivi réel de l'utilisateur).
+
+EXPORT_ENTETES = {
+    1: "VOITURE",
+    3: "PLAQUE",
+    4: "NOM",
+    5: "FRAIS INTER",
+    6: "MOYEN DE PAIEMENT",
+    7: "DATE",
+    8: "MONTANT CASHSENTINEL",
+}
+
+
+def nom_feuille_unique(nom_souhaite, noms_deja_pris):
+    interdits = set('[]:*?/\\')
+    base = "".join(c for c in nom_souhaite if c not in interdits).strip()[:31] or "Commercial"
+    nom = base
+    n = 2
+    while nom in noms_deja_pris:
+        suffixe = f" ({n})"
+        nom = base[: 31 - len(suffixe)] + suffixe
+        n += 1
+    noms_deja_pris.add(nom)
+    return nom
+
+
+def construire_classeur_export(commerciaux_rows, dossiers_par_commercial):
+    wb = Workbook()
+    wb.remove(wb.active)
+    noms_deja_pris = set()
+    for com in commerciaux_rows:
+        dossiers = dossiers_par_commercial.get(com["id"]) or []
+        if not dossiers:
+            continue
+        ws = wb.create_sheet(nom_feuille_unique(com["nom"], noms_deja_pris))
+        for col, entete in EXPORT_ENTETES.items():
+            ws.cell(row=1, column=col, value=entete)
+        for i, d in enumerate(dossiers, start=2):
+            ws.cell(row=i, column=1, value=d["voiture"])
+            ws.cell(row=i, column=3, value=d["plaque"])
+            ws.cell(row=i, column=4, value=d["client"])
+            ws.cell(row=i, column=5, value=d["frais_intermediation"])
+            try:
+                ws.cell(row=i, column=7, value=datetime.strptime(d["date"], "%Y-%m-%d").date())
+            except ValueError:
+                ws.cell(row=i, column=7, value=d["date"])
+            ws.cell(row=i, column=8, value=d["mandat_total"] - d["frais_intermediation"])
+        for col in (1, 3, 4, 6, 7, 8):
+            ws.column_dimensions[get_column_letter(col)].width = 16
+    return wb
+
+
+def commerciaux_pour_export(db, entreprise_id):
+    if entreprise_id and entreprise_id != "toutes":
+        return db.execute(
+            "SELECT * FROM commerciaux WHERE entreprise_id = ? ORDER BY nom", (entreprise_id,)
+        ).fetchall()
+    return db.execute("SELECT * FROM commerciaux ORDER BY nom").fetchall()
+
+
+def generer_export(seulement_nouveaux):
+    db = get_db()
+    entreprise_id = request.args.get("entreprise_id")
+    commerciaux_rows = commerciaux_pour_export(db, entreprise_id)
+
+    dossiers_par_commercial = {}
+    tous_ids = []
+    for com in commerciaux_rows:
+        if seulement_nouveaux:
+            rows = db.execute(
+                "SELECT * FROM dossiers WHERE commercial_id = ? AND exporte_excel_le IS NULL ORDER BY date DESC, id DESC",
+                (com["id"],),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT * FROM dossiers WHERE commercial_id = ? ORDER BY date DESC, id DESC", (com["id"],)
+            ).fetchall()
+        if rows:
+            dossiers_par_commercial[com["id"]] = rows
+            tous_ids.extend(r["id"] for r in rows)
+
+    if not tous_ids:
+        message = "Aucun nouveau dossier depuis le dernier export" if seulement_nouveaux else "Aucun dossier à exporter"
+        return jsonify(error=message), 400
+
+    wb = construire_classeur_export(commerciaux_rows, dossiers_par_commercial)
+
+    maintenant = datetime.utcnow().isoformat()
+    db.executemany("UPDATE dossiers SET exporte_excel_le = ? WHERE id = ?", [(maintenant, i) for i in tous_ids])
+    db.commit()
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    prefixe = "mise-a-jour" if seulement_nouveaux else "export"
+    nom_fichier = f"{prefixe}-hse-motors-{date.today().isoformat()}.xlsx"
+    return Response(
+        buffer.read(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{nom_fichier}"'},
+    )
+
+
+@app.post("/api/export-excel")
+@admin_required
+def export_excel_complet():
+    return generer_export(seulement_nouveaux=False)
+
+
+@app.post("/api/export-excel/maj")
+@admin_required
+def export_excel_maj():
+    return generer_export(seulement_nouveaux=True)
 
 
 # ---------- Frontend ----------

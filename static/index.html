@@ -45,7 +45,7 @@
 <script type="text/babel" data-type="module" data-presets="react">
 import React, { useState, useEffect, useCallback } from "react";
 import { createRoot } from "react-dom/client";
-import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw, Target, Building2, Minimize2, Maximize2, Star } from "lucide-react";
+import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw, Target, Building2, Minimize2, Maximize2, Star, FileSpreadsheet, FileUp } from "lucide-react";
 
 // ---------- API ----------
 
@@ -89,6 +89,7 @@ export default function App() {
   const [kpiOrder, setKpiOrder] = useState(null);
   const [kpiReduits, setKpiReduits] = useState([]);
   const [actualisation, setActualisation] = useState(false);
+  const [exportEnCours, setExportEnCours] = useState(false);
 
   const estAdmin = utilisateur?.role === "admin";
   const estAnimateur = utilisateur?.role === "animateur";
@@ -117,6 +118,36 @@ export default function App() {
       await api("/api/preferences/kpi-reduits", { method: "PUT", body: { reduits: nouveauxReduits } });
     } catch (e) {
       setErreur(e.message);
+    }
+  };
+
+  const exporterExcel = async (mode) => {
+    setExportEnCours(true);
+    setErreur("");
+    try {
+      const chemin = mode === "maj" ? "/api/export-excel/maj" : "/api/export-excel";
+      const qs = entrepriseFiltre !== "toutes" ? `?entreprise_id=${entrepriseFiltre}` : "";
+      const res = await fetch(`${chemin}${qs}`, { method: "POST", credentials: "same-origin" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error((data && data.error) || `Erreur ${res.status}`);
+      }
+      const blob = await res.blob();
+      const entete = res.headers.get("content-disposition") || "";
+      const correspondance = entete.match(/filename="?([^"]+)"?/);
+      const nomFichier = correspondance ? correspondance[1] : "export-hse-motors.xlsx";
+      const url = URL.createObjectURL(blob);
+      const lien = document.createElement("a");
+      lien.href = url;
+      lien.download = nomFichier;
+      document.body.appendChild(lien);
+      lien.click();
+      lien.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setErreur(e.message);
+    } finally {
+      setExportEnCours(false);
     }
   };
 
@@ -316,11 +347,33 @@ export default function App() {
 
             <div style={styles.sectionHeader}>
               <h2 style={styles.sectionTitre}>Dossiers</h2>
-              {!estAnimateur && (
-                <button style={styles.boutonAjout} onClick={() => setModalDossier({})}>
-                  <Plus size={16} strokeWidth={2.5} /> Nouveau dossier
-                </button>
-              )}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {estAdmin && (
+                  <>
+                    <button
+                      style={{ ...styles.boutonSecondaire, opacity: exportEnCours ? 0.6 : 1 }}
+                      disabled={exportEnCours}
+                      title="Génère un nouveau fichier Excel avec tous les dossiers, une feuille par commercial"
+                      onClick={() => exporterExcel("complet")}
+                    >
+                      <FileSpreadsheet size={16} /> Exporter Excel
+                    </button>
+                    <button
+                      style={{ ...styles.boutonSecondaire, opacity: exportEnCours ? 0.6 : 1 }}
+                      disabled={exportEnCours}
+                      title="Génère un fichier Excel avec uniquement les dossiers créés depuis le dernier export"
+                      onClick={() => exporterExcel("maj")}
+                    >
+                      <FileUp size={16} /> Mettre à jour Excel
+                    </button>
+                  </>
+                )}
+                {!estAnimateur && (
+                  <button style={styles.boutonAjout} onClick={() => setModalDossier({})}>
+                    <Plus size={16} strokeWidth={2.5} /> Nouveau dossier
+                  </button>
+                )}
+              </div>
             </div>
 
             <div style={styles.rechercheConteneur}>
@@ -1661,6 +1714,11 @@ const styles = {
   boutonAjout: {
     display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "#E8A33D", border: "none",
     borderRadius: 8, color: "#14171C", fontSize: 13, fontWeight: 600, cursor: "pointer",
+  },
+  boutonSecondaire: {
+    display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "transparent",
+    border: "1px solid #2A323D", borderRadius: 8, color: "#E7E5E0", fontSize: 13, fontWeight: 600, cursor: "pointer",
+    fontFamily: "'Inter', sans-serif",
   },
   cartesEntreprises: { display: "flex", gap: 10, flexWrap: "wrap" },
   carteEntreprise: {

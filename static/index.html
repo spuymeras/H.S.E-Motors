@@ -45,7 +45,7 @@
 <script type="text/babel" data-type="module" data-presets="react">
 import React, { useState, useEffect, useCallback } from "react";
 import { createRoot } from "react-dom/client";
-import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw, Target, Building2, Minimize2, Maximize2, Star, FileSpreadsheet, FileUp } from "lucide-react";
+import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw, Target, Building2, Minimize2, Maximize2, Star, FileSpreadsheet, FileUp, Receipt, Wallet, PiggyBank } from "lucide-react";
 
 // ---------- API ----------
 
@@ -76,6 +76,8 @@ export default function App() {
   const [commerciaux, setCommerciaux] = useState([]);
   const [dossiers, setDossiers] = useState([]);
   const [dossiersTous, setDossiersTous] = useState([]);
+  const [refacturation, setRefacturation] = useState(null);
+  const [chargesFixes, setChargesFixes] = useState([]);
   const [entrepriseFiltre, setEntrepriseFiltre] = useState("toutes");
   const [commercialFiltre, setCommercialFiltre] = useState("tous");
   const [anneeFiltre, setAnneeFiltre] = useState("toutes");
@@ -168,19 +170,31 @@ export default function App() {
     setDossiersTous(rows);
   }, []);
 
+  const chargerRefacturation = useCallback(async () => {
+    const data = await api("/api/refacturation");
+    setRefacturation(data);
+  }, []);
+
+  const chargerChargesFixes = useCallback(async () => {
+    const rows = await api("/api/charges-fixes");
+    setChargesFixes(rows);
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
         const me = await api("/api/me");
         setUtilisateur(me);
-        await Promise.all([chargerReferentiels(), chargerDossiers("toutes"), chargerDossiersTous()]);
+        const chargeurs = [chargerReferentiels(), chargerDossiers("toutes"), chargerDossiersTous(), chargerRefacturation()];
+        if (me.role === "admin") chargeurs.push(chargerChargesFixes());
+        await Promise.all(chargeurs);
       } catch {
         setUtilisateur(null);
       } finally {
         setChargement(false);
       }
     })();
-  }, [chargerReferentiels, chargerDossiers, chargerDossiersTous]);
+  }, [chargerReferentiels, chargerDossiers, chargerDossiersTous, chargerRefacturation, chargerChargesFixes]);
 
   useEffect(() => {
     if (utilisateur) chargerDossiers(entrepriseFiltre);
@@ -190,7 +204,9 @@ export default function App() {
     setUtilisateur(me);
     setChargement(true);
     try {
-      await Promise.all([chargerReferentiels(), chargerDossiers("toutes"), chargerDossiersTous()]);
+      const chargeurs = [chargerReferentiels(), chargerDossiers("toutes"), chargerDossiersTous(), chargerRefacturation()];
+      if (me.role === "admin") chargeurs.push(chargerChargesFixes());
+      await Promise.all(chargeurs);
     } finally {
       setChargement(false);
     }
@@ -203,11 +219,15 @@ export default function App() {
     setCommerciaux([]);
     setDossiers([]);
     setDossiersTous([]);
+    setRefacturation(null);
+    setChargesFixes([]);
     setVue("dossiers");
   };
 
   const rafraichir = async () => {
-    await Promise.all([chargerReferentiels(), chargerDossiers(entrepriseFiltre), chargerDossiersTous()]);
+    const chargeurs = [chargerReferentiels(), chargerDossiers(entrepriseFiltre), chargerDossiersTous(), chargerRefacturation()];
+    if (estAdmin) chargeurs.push(chargerChargesFixes());
+    await Promise.all(chargeurs);
   };
 
   const actualiserManuellement = async () => {
@@ -243,6 +263,24 @@ export default function App() {
     }
     return true;
   });
+
+  // Même logique de filtre entreprise/commercial que dossiersAffiches, appliquée aux
+  // lignes de refacturation (mois courant uniquement, pas de filtre année/mois : ça n'a
+  // pas de sens sur une donnée qui ne couvre que le mois en cours).
+  const refacturationTotal = (refacturation?.lignes || [])
+    .filter((l) => {
+      if (commercialFiltre !== "tous" && String(l.commercial_id) !== commercialFiltre) return false;
+      if (entrepriseFiltre !== "toutes") {
+        const com = commerciaux.find((c) => c.id === l.commercial_id);
+        if (!com || String(com.entreprise_id) !== String(entrepriseFiltre)) return false;
+      }
+      return true;
+    })
+    .reduce((s, l) => s + l.total, 0);
+
+  // Charges fixes : pas de notion d'entreprise ni de commercial, ni de mois — une somme
+  // globale unique, valable pour l'ensemble tant qu'un poste n'est pas modifié/supprimé.
+  const chargesFixesTotal = chargesFixes.reduce((s, c) => s + c.montant, 0);
 
   // Le KPI d'atteinte d'objectif n'a de sens que pour un seul commercial à la fois :
   // soit c'est le compte connecté, soit l'admin/animateur a filtré sur une personne précise.
@@ -289,22 +327,36 @@ export default function App() {
           </div>
         )}
 
-        {peutToutVoir && (
-          <div style={styles.ongletsRangee}>
-            <button
-              style={{ ...styles.onglet, ...(vue === "dossiers" ? styles.ongletActif : {}) }}
-              onClick={() => setVue("dossiers")}
-            >
-              Dossiers
-            </button>
+        <div style={styles.ongletsRangee}>
+          <button
+            style={{ ...styles.onglet, ...(vue === "dossiers" ? styles.ongletActif : {}) }}
+            onClick={() => setVue("dossiers")}
+          >
+            Dossiers
+          </button>
+          <button
+            style={{ ...styles.onglet, ...(vue === "refacturation" ? styles.ongletActif : {}) }}
+            onClick={() => setVue("refacturation")}
+          >
+            Refacturation
+          </button>
+          {peutToutVoir && (
             <button
               style={{ ...styles.onglet, ...(vue === "equipe" ? styles.ongletActif : {}) }}
               onClick={() => setVue("equipe")}
             >
               Équipe &amp; entreprises
             </button>
-          </div>
-        )}
+          )}
+          {estAdmin && (
+            <button
+              style={{ ...styles.onglet, ...(vue === "charges" ? styles.ongletActif : {}) }}
+              onClick={() => setVue("charges")}
+            >
+              Charges fixes
+            </button>
+          )}
+        </div>
 
         {vue === "dossiers" && (
           <>
@@ -341,6 +393,9 @@ export default function App() {
               commercialCible={commercialCible}
               entrepriseCible={entrepriseCible}
               objectifGlobalEntreprises={objectifGlobalEntreprises}
+              refacturationTotal={refacturationTotal}
+              estAdminStrict={estAdmin}
+              chargesFixesTotal={chargesFixesTotal}
               kpiReduits={kpiReduits}
               onBasculerReduction={basculerReductionKpi}
             />
@@ -409,6 +464,15 @@ export default function App() {
           </>
         )}
 
+        {vue === "refacturation" && (
+          <Refacturation
+            estAdmin={estAdmin}
+            estAnimateur={estAnimateur}
+            donnees={refacturation}
+            onRafraichir={chargerRefacturation}
+          />
+        )}
+
         {vue === "equipe" && peutToutVoir && (
           <EquipeEtEntreprises
             entreprises={entreprises}
@@ -419,6 +483,10 @@ export default function App() {
             onNouveauCommercial={() => setModalCommercial({})}
             onModifierCommercial={(c) => setModalCommercial(c)}
           />
+        )}
+
+        {vue === "charges" && estAdmin && (
+          <ChargesFixes donnees={chargesFixes} onRafraichir={chargerChargesFixes} onErreur={setErreur} />
         )}
       </div>
 
@@ -827,11 +895,13 @@ function FiltrePeriode({ anneesDisponibles, anneeFiltre, setAnneeFiltre, moisFil
 
 const GARANTIE_ACHAT_NON_VENDUE = [90.15, 86.15];
 
-function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, commercialCible, entrepriseCible, objectifGlobalEntreprises, kpiReduits, onBasculerReduction }) {
+function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, commercialCible, entrepriseCible, objectifGlobalEntreprises, refacturationTotal, estAdminStrict, chargesFixesTotal, kpiReduits, onBasculerReduction }) {
   const chiffreAffairesHT = dossiers.reduce((s, d) => s + d.total_ht, 0);
   const caTtc = dossiers.reduce((s, d) => s + d.mandat_total, 0);
   const caHtBrut = dossiers.reduce((s, d) => s + d.mandat_total / 1.2, 0);
-  const totalCommissions = dossiers.reduce((s, d) => s + d.commission, 0);
+  // Le montant refacturé (Call center + Leads Meta + Leboncoin du mois courant) vient en
+  // déduction des commissions dues aux commerciaux.
+  const totalCommissions = dossiers.reduce((s, d) => s + d.commission, 0) - (refacturationTotal || 0);
   const caFraisIntermediation = dossiers.reduce((s, d) => s + d.frais_intermediation, 0);
   const voituresVendues = dossiers.length;
 
@@ -864,8 +934,21 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
     { id: "ca_frais_intermediation", label: "CA frais d'intermédiation", valeur: fmtEUR(caFraisIntermediation), icone: TrendingUp, couleur: "#5B8DEF" },
     { id: "ca_garantie_vendue", label: "CA garantie vendue", valeur: fmtEUR(caGarantieVendue), icone: ShieldCheck, couleur: "#C58AF0" },
     { id: "mandat_moyen", label: "Mandat moyen", valeur: fmtEUR(mandatMoyen), icone: TrendingUp, couleur: "#E8A33D" },
+    { id: "refacturation", label: "Refacturation", valeur: fmtEUR(refacturationTotal || 0), icone: Receipt, couleur: "#C58AF0" },
     ...(estAdmin
       ? [{ id: "achat_garantie", label: "Achat garantie", valeur: fmtEUR(achatGarantie), icone: TrendingUp, couleur: "#8B93A1" }]
+      : []),
+    ...(estAdminStrict
+      ? [{ id: "charges_fixes", label: "Charges fixes", valeur: fmtEUR(chargesFixesTotal || 0), icone: Wallet, couleur: "#E8746B" }]
+      : []),
+    ...(estAdminStrict
+      ? [{
+          id: "benefice",
+          label: "Bénéfice",
+          valeur: fmtEUR(chiffreAffairesHT - totalCommissions - (chargesFixesTotal || 0)),
+          icone: PiggyBank,
+          couleur: "#4FD1C5",
+        }]
       : []),
     ...(commercialCible && commercialCible.objectif_ca_ht_brut != null
       ? [{
@@ -1027,12 +1110,14 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
             <th style={{ ...styles.th, ...figeVehicule }}>Véhicule</th>
             {estAdmin && <th style={styles.th}>Commercial</th>}
             {estAdmin && <th style={styles.th}>Entreprise</th>}
-            <th style={{ ...styles.th, textAlign: "right" }}>Mandat total TTC</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Frais d'intermédiation</th>
-            <th style={{ ...styles.th, textAlign: "right" }}>Gar. achat</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Commission d'agence</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Gar. vendu</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Gar. achat</th>
             <th style={{ ...styles.th, textAlign: "right" }}>TCA (18%)</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Nettoyage</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Cash Sentinel</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Mandat total TTC</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Total HT</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Commission</th>
             {peutModifier && <th style={styles.th}></th>}
@@ -1058,15 +1143,19 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
                   </span>
                 </td>
               )}
-              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8A33D" }}>
-                {fmtEUR(d.mandat_total)}
-              </td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.frais_intermediation)}</td>
-              <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.garantie_achat)}</td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.commission_agence)}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.garantie_prix_vendu)}</td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.garantie_achat)}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#C58AF0" }}>{fmtEUR(d.tca)}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8746B" }}>
+                {d.nettoyage > 0 ? `-${fmtEUR(d.nettoyage)}` : fmtEUR(d.nettoyage)}
+              </td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8746B" }}>
                 -{fmtEUR(d.cash_sentinel)}
+              </td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8A33D" }}>
+                {fmtEUR(d.mandat_total)}
               </td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.total_ht)}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#4FD1C5" }}>
@@ -1102,11 +1191,16 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
   const [plaque, setPlaque] = useState(dossier.plaque || "");
   const [garantieAchat, setGarantieAchat] = useState(dossier.garantie_achat ?? "");
   const [garantiePrixVendu, setGarantiePrixVendu] = useState(dossier.garantie_prix_vendu ?? "");
-  const [mandatTotal, setMandatTotal] = useState(dossier.mandat_total ?? "");
   const [fraisIntermediation, setFraisIntermediation] = useState(dossier.frais_intermediation ?? "");
+  const [nettoyage, setNettoyage] = useState(dossier.nettoyage ?? "");
+  const [commissionAgence, setCommissionAgence] = useState(dossier.commission_agence ?? "");
   const [date, setDate] = useState(dossier.date || new Date().toISOString().slice(0, 10));
 
-  const valide = client.trim() !== "" && voiture.trim() !== "" && Number(mandatTotal) > 0;
+  // Mandat total n'est plus saisi : il se déduit de ces trois montants.
+  const mandatTotal =
+    (Number(commissionAgence) || 0) + (Number(fraisIntermediation) || 0) + (Number(garantiePrixVendu) || 0);
+
+  const valide = client.trim() !== "" && voiture.trim() !== "" && mandatTotal > 0;
 
   return (
     <div style={styles.modalFond} onClick={onFermer}>
@@ -1155,13 +1249,35 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
         </label>
 
         <label style={styles.champLabel}>
-          Garantie achat (€)
-          <input style={styles.input} type="number" value={garantieAchat} onChange={(e) => setGarantieAchat(e.target.value)} placeholder="0" />
+          Frais d'intermédiation (€)
+          <input
+            style={styles.input}
+            type="number"
+            value={fraisIntermediation}
+            onChange={(e) => setFraisIntermediation(e.target.value)}
+            placeholder="0"
+          />
+        </label>
+
+        <label style={styles.champLabel}>
+          Commission d'agence (€)
+          <input
+            style={styles.input}
+            type="number"
+            value={commissionAgence}
+            onChange={(e) => setCommissionAgence(e.target.value)}
+            placeholder="0"
+          />
         </label>
 
         <label style={styles.champLabel}>
           Garantie prix vendu (€)
           <input style={styles.input} type="number" value={garantiePrixVendu} onChange={(e) => setGarantiePrixVendu(e.target.value)} placeholder="0" />
+        </label>
+
+        <label style={styles.champLabel}>
+          Garantie achat (€)
+          <input style={styles.input} type="number" value={garantieAchat} onChange={(e) => setGarantieAchat(e.target.value)} placeholder="0" />
         </label>
 
         <div style={styles.tcaApercu}>
@@ -1172,20 +1288,24 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
         </div>
 
         <label style={styles.champLabel}>
-          Mandat total (€)
-          <input style={styles.input} type="number" value={mandatTotal} onChange={(e) => setMandatTotal(e.target.value)} placeholder="0" />
-        </label>
-
-        <label style={styles.champLabel}>
-          Frais d'intermédiation (€)
+          Nettoyage (€)
           <input
             style={styles.input}
             type="number"
-            value={fraisIntermediation}
-            onChange={(e) => setFraisIntermediation(e.target.value)}
+            value={nettoyage}
+            onChange={(e) => setNettoyage(e.target.value)}
             placeholder="0"
           />
         </label>
+        <div style={styles.tauxAutoAide}>Montant facturé pour le nettoyage, déduit du total HT</div>
+
+        <div style={styles.tcaApercu}>
+          <span>Mandat total (€)</span>
+          <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#E8A33D", fontWeight: 600 }}>
+            {fmtEUR(mandatTotal)}
+          </span>
+        </div>
+        <div style={styles.tauxAutoAide}>Calculé automatiquement : commission d'agence + frais d'intermédiation + garantie prix vendu</div>
 
         <button
           style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}
@@ -1200,13 +1320,350 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
               plaque,
               garantie_achat: Number(garantieAchat) || 0,
               garantie_prix_vendu: Number(garantiePrixVendu) || 0,
-              mandat_total: Number(mandatTotal),
+              mandat_total: mandatTotal,
               frais_intermediation: Number(fraisIntermediation) || 0,
+              nettoyage: Number(nettoyage) || 0,
+              commission_agence: Number(commissionAgence) || 0,
               date,
             })
           }
         >
           {estEdition ? "Enregistrer les modifications" : "Enregistrer le dossier"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Refacturation ----------
+
+const CATEGORIES_REFACTURATION = [
+  { id: "call_center", label: "Call center" },
+  { id: "leads_meta", label: "Leads Meta" },
+  { id: "leboncoin", label: "Leboncoin" },
+];
+
+function Refacturation({ estAdmin, estAnimateur, donnees, onRafraichir }) {
+  const [categorie, setCategorie] = useState("call_center");
+  const [erreur, setErreur] = useState("");
+
+  if (!donnees) {
+    return erreur ? <div style={styles.bandeauErreur}>{erreur}</div> : null;
+  }
+
+  const peutSaisirNombre = !estAnimateur;
+  const libelleMois = new Date(`${donnees.mois}-01`).toLocaleDateString("fr-FR", {
+    month: "long",
+    year: "numeric",
+  });
+
+  const enregistrerNombre = async (commercialId, cat, nombre) => {
+    try {
+      await api("/api/refacturation/nombre", {
+        method: "PUT",
+        body: { commercial_id: commercialId, categorie: cat, nombre },
+      });
+      onRafraichir();
+    } catch (e) {
+      setErreur(e.message);
+    }
+  };
+
+  const enregistrerLeboncoin = async (commercialId, montant) => {
+    try {
+      await api("/api/refacturation/leboncoin", { method: "PUT", body: { commercial_id: commercialId, montant } });
+      onRafraichir();
+    } catch (e) {
+      setErreur(e.message);
+    }
+  };
+
+  const enregistrerTarif = async (cat, prixUnitaire) => {
+    try {
+      await api("/api/refacturation/tarifs", { method: "PUT", body: { categorie: cat, prix_unitaire: prixUnitaire } });
+      onRafraichir();
+    } catch (e) {
+      setErreur(e.message);
+    }
+  };
+
+  return (
+    <div>
+      <div style={styles.sectionHeader}>
+        <h2 style={styles.sectionTitre}>Refacturation — {libelleMois}</h2>
+      </div>
+
+      {erreur && (
+        <div style={styles.bandeauErreur}>
+          {erreur}
+          <button style={styles.fermerErreur} onClick={() => setErreur("")}><X size={14} /></button>
+        </div>
+      )}
+
+      <div style={{ ...styles.ongletsRangee, marginBottom: 16 }}>
+        {CATEGORIES_REFACTURATION.map((c) => (
+          <button
+            key={c.id}
+            style={{ ...styles.onglet, ...(categorie === c.id ? styles.ongletActif : {}) }}
+            onClick={() => setCategorie(c.id)}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+
+      {categorie !== "leboncoin" && (
+        <TableauRefacturationCompteur
+          categorie={categorie}
+          donnees={donnees}
+          estAdmin={estAdmin}
+          peutSaisirNombre={peutSaisirNombre}
+          onEnregistrerNombre={enregistrerNombre}
+          onEnregistrerTarif={enregistrerTarif}
+        />
+      )}
+
+      {categorie === "leboncoin" && (
+        <TableauRefacturationLeboncoin
+          donnees={donnees}
+          estAdmin={estAdmin}
+          onEnregistrerLeboncoin={enregistrerLeboncoin}
+        />
+      )}
+    </div>
+  );
+}
+
+function ChampMontantDiffere({ valeurInitiale, onValider, disabled, placeholder }) {
+  const [valeur, setValeur] = useState(valeurInitiale);
+
+  useEffect(() => {
+    setValeur(valeurInitiale);
+  }, [valeurInitiale]);
+
+  return (
+    <input
+      style={{ ...styles.input, textAlign: "right", opacity: disabled ? 0.6 : 1 }}
+      type="number"
+      value={valeur}
+      disabled={disabled}
+      placeholder={placeholder}
+      onChange={(e) => setValeur(e.target.value)}
+      onBlur={() => {
+        const nombre = Number(valeur) || 0;
+        if (nombre !== (Number(valeurInitiale) || 0)) onValider(nombre);
+      }}
+    />
+  );
+}
+
+function TableauRefacturationCompteur({ categorie, donnees, estAdmin, peutSaisirNombre, onEnregistrerNombre, onEnregistrerTarif }) {
+  const cleNombre = categorie === "call_center" ? "nombre_call_center" : "nombre_leads_meta";
+  const cleMontant = categorie === "call_center" ? "montant_call_center" : "montant_leads_meta";
+  const prixUnitaire = donnees.tarifs[categorie] || 0;
+
+  return (
+    <div>
+      {estAdmin && (
+        <div style={{ ...styles.tcaApercu, marginBottom: 16, maxWidth: 320 }}>
+          <span>Prix unitaire (€)</span>
+          <ChampMontantDiffere
+            valeurInitiale={prixUnitaire}
+            onValider={(v) => onEnregistrerTarif(categorie, v)}
+          />
+        </div>
+      )}
+      {!estAdmin && (
+        <div style={styles.tauxAutoAide}>Prix unitaire fixé par l'admin : {fmtEUR(prixUnitaire)}</div>
+      )}
+
+      <div style={styles.tableauConteneur}>
+        <table style={{ ...styles.tableau, minWidth: "auto" }}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Commercial</th>
+              <th style={{ ...styles.th, textAlign: "right" }}>Nombre</th>
+              <th style={{ ...styles.th, textAlign: "right" }}>Montant</th>
+            </tr>
+          </thead>
+          <tbody>
+            {donnees.lignes.map((l) => (
+              <tr key={l.commercial_id} style={styles.tr}>
+                <td style={styles.td}>{l.commercial_nom}</td>
+                <td style={{ ...styles.td, textAlign: "right" }}>
+                  <ChampMontantDiffere
+                    valeurInitiale={l[cleNombre]}
+                    disabled={!peutSaisirNombre}
+                    onValider={(v) => onEnregistrerNombre(l.commercial_id, categorie, v)}
+                  />
+                </td>
+                <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(l[cleMontant])}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function TableauRefacturationLeboncoin({ donnees, estAdmin, onEnregistrerLeboncoin }) {
+  return (
+    <div>
+      {!estAdmin && (
+        <div style={styles.tauxAutoAide}>Montant fixé par l'admin, propre à chaque commercial.</div>
+      )}
+      <div style={styles.tableauConteneur}>
+        <table style={{ ...styles.tableau, minWidth: "auto" }}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Commercial</th>
+              <th style={{ ...styles.th, textAlign: "right" }}>Montant (€)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {donnees.lignes.map((l) => (
+              <tr key={l.commercial_id} style={styles.tr}>
+                <td style={styles.td}>{l.commercial_nom}</td>
+                <td style={{ ...styles.td, textAlign: "right" }}>
+                  <ChampMontantDiffere
+                    valeurInitiale={l.montant_leboncoin}
+                    disabled={!estAdmin}
+                    onValider={(v) => onEnregistrerLeboncoin(l.commercial_id, v)}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Charges fixes (admin uniquement) ----------
+
+function ChargesFixes({ donnees, onRafraichir, onErreur }) {
+  const [modal, setModal] = useState(null); // null | {} | charge existante
+  const total = donnees.reduce((s, c) => s + c.montant, 0);
+
+  const supprimer = async (c) => {
+    if (!confirm(`Supprimer la charge "${c.nom}" ?`)) return;
+    try {
+      await api(`/api/charges-fixes/${c.id}`, { method: "DELETE" });
+      onRafraichir();
+    } catch (e) {
+      onErreur(e.message);
+    }
+  };
+
+  return (
+    <div>
+      <div style={styles.sectionHeader}>
+        <h2 style={styles.sectionTitre}>Charges fixes</h2>
+        <button style={styles.boutonAjout} onClick={() => setModal({})}>
+          <Plus size={16} strokeWidth={2.5} /> Nouvelle charge
+        </button>
+      </div>
+
+      {donnees.length === 0 ? (
+        <div style={styles.videEtat}>Aucune charge fixe pour l'instant.</div>
+      ) : (
+        <div style={styles.tableauConteneur}>
+          <table style={{ ...styles.tableau, minWidth: "auto" }}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Nom</th>
+                <th style={{ ...styles.th, textAlign: "right" }}>Montant (€)</th>
+                <th style={styles.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {donnees.map((c) => (
+                <tr key={c.id} style={styles.tr}>
+                  <td style={styles.td}>{c.nom}</td>
+                  <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(c.montant)}</td>
+                  <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
+                    <button style={styles.boutonIcone} onClick={() => setModal(c)} title="Modifier">
+                      <Pencil size={14} />
+                    </button>
+                    <button style={styles.boutonIcone} onClick={() => supprimer(c)} title="Supprimer">
+                      <Trash2 size={14} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td style={{ ...styles.td, fontWeight: 600 }}>Total</td>
+                <td style={{ ...styles.td, ...styles.mono, textAlign: "right", fontWeight: 600 }}>{fmtEUR(total)}</td>
+                <td style={styles.td}></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
+      {modal && (
+        <ModalChargeFixe
+          charge={modal}
+          onFermer={() => setModal(null)}
+          onValider={async (payload) => {
+            try {
+              if (modal.id) {
+                await api(`/api/charges-fixes/${modal.id}`, { method: "PUT", body: payload });
+              } else {
+                await api("/api/charges-fixes", { method: "POST", body: payload });
+              }
+              setModal(null);
+              onRafraichir();
+            } catch (e) {
+              onErreur(e.message);
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ModalChargeFixe({ charge, onFermer, onValider }) {
+  const estEdition = Boolean(charge.id);
+  const [nom, setNom] = useState(charge.nom || "");
+  const [montant, setMontant] = useState(charge.montant ?? "");
+
+  const valide = nom.trim() !== "" && Number(montant) > 0;
+
+  return (
+    <div style={styles.modalFond} onClick={onFermer}>
+      <div style={styles.modalCarte} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalEnTete}>
+          <h3 style={styles.modalTitre}>{estEdition ? "Modifier la charge" : "Nouvelle charge"}</h3>
+          <button style={styles.modalFermer} onClick={onFermer}><X size={18} /></button>
+        </div>
+
+        <label style={styles.champLabel}>
+          Nom
+          <input
+            style={styles.input}
+            value={nom}
+            onChange={(e) => setNom(e.target.value)}
+            placeholder="Ex: Loyer, Assurance, Logiciel…"
+          />
+        </label>
+
+        <label style={styles.champLabel}>
+          Montant (€)
+          <input style={styles.input} type="number" value={montant} onChange={(e) => setMontant(e.target.value)} placeholder="0" />
+        </label>
+
+        <button
+          style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}
+          disabled={!valide}
+          onClick={() => valide && onValider({ nom: nom.trim(), montant: Number(montant) })}
+        >
+          {estEdition ? "Enregistrer les modifications" : "Ajouter la charge"}
         </button>
       </div>
     </div>

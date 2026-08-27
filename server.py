@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS dossiers (
     garantie_prix_vendu REAL NOT NULL DEFAULT 0,
     mandat_total REAL NOT NULL DEFAULT 0,
     frais_intermediation REAL NOT NULL DEFAULT 0,
+    nettoyage REAL NOT NULL DEFAULT 0,
+    commission_agence REAL NOT NULL DEFAULT 0,
     exporte_excel_le TEXT
 );
 
@@ -139,6 +141,27 @@ CREATE TABLE IF NOT EXISTS avis_google (
     avis_obtenus INTEGER NOT NULL DEFAULT 0,
     UNIQUE(commercial_id, mois)
 );
+
+CREATE TABLE IF NOT EXISTS refacturations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    commercial_id INTEGER NOT NULL REFERENCES commerciaux(id),
+    mois TEXT NOT NULL,
+    nombre_call_center INTEGER NOT NULL DEFAULT 0,
+    nombre_leads_meta INTEGER NOT NULL DEFAULT 0,
+    montant_leboncoin REAL NOT NULL DEFAULT 0,
+    UNIQUE(commercial_id, mois)
+);
+
+CREATE TABLE IF NOT EXISTS tarifs_refacturation (
+    categorie TEXT PRIMARY KEY,
+    prix_unitaire REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS charges_fixes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nom TEXT NOT NULL,
+    montant REAL NOT NULL DEFAULT 0
+);
 """
 
 
@@ -148,6 +171,10 @@ def migrer_db(db):
         db.execute("ALTER TABLE dossiers ADD COLUMN frais_intermediation REAL NOT NULL DEFAULT 0")
     if "exporte_excel_le" not in colonnes:
         db.execute("ALTER TABLE dossiers ADD COLUMN exporte_excel_le TEXT")
+    if "nettoyage" not in colonnes:
+        db.execute("ALTER TABLE dossiers ADD COLUMN nettoyage REAL NOT NULL DEFAULT 0")
+    if "commission_agence" not in colonnes:
+        db.execute("ALTER TABLE dossiers ADD COLUMN commission_agence REAL NOT NULL DEFAULT 0")
 
     colonnes_commerciaux = {row["name"] for row in db.execute("PRAGMA table_info(commerciaux)")}
     if "objectif_ca_ht_brut" not in colonnes_commerciaux:
@@ -222,6 +249,11 @@ def init_db():
     # Ici, tout ce qui est check-then-write est regroupé sous un seul verrou, donc sérialisé.
     db.execute("BEGIN IMMEDIATE")
     migrer_db(db)
+    for categorie in ("call_center", "leads_meta"):
+        db.execute(
+            "INSERT OR IGNORE INTO tarifs_refacturation (categorie, prix_unitaire) VALUES (?, 0)",
+            (categorie,),
+        )
     already_seeded = db.execute("SELECT COUNT(*) FROM entreprises").fetchone()[0] > 0
     if not already_seeded:
         seed(db)
@@ -685,12 +717,12 @@ BONUS_AVIS_GOOGLE = 0.05
 
 def total_ht_ligne(row):
     tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 0.18
-    return (row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL) / 1.2
+    return (row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL - row["nettoyage"]) / 1.2
 
 
 def ca_ht_net_mensuel(db, commercial_id, mois):
     rows = db.execute(
-        "SELECT garantie_achat, garantie_prix_vendu, mandat_total FROM dossiers "
+        "SELECT garantie_achat, garantie_prix_vendu, mandat_total, nettoyage FROM dossiers "
         "WHERE commercial_id = ? AND substr(date, 1, 7) = ?",
         (commercial_id, mois),
     ).fetchall()
@@ -952,7 +984,7 @@ CASH_SENTINEL = 43.20
 
 def dossier_dict(row, com, ent, db):
     tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 0.18
-    total_ht = (row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL) / 1.2
+    total_ht = (row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL - row["nettoyage"]) / 1.2
     taux = taux_effectif(db, com, row["date"][:7])
     commission = total_ht * taux
     return {
@@ -970,6 +1002,8 @@ def dossier_dict(row, com, ent, db):
         "garantie_prix_vendu": row["garantie_prix_vendu"],
         "mandat_total": row["mandat_total"],
         "frais_intermediation": row["frais_intermediation"],
+        "nettoyage": row["nettoyage"],
+        "commission_agence": row["commission_agence"],
         "tca": tca,
         "cash_sentinel": CASH_SENTINEL,
         "total_ht": total_ht,
@@ -1018,6 +1052,11 @@ def resolve_commercial_id(data):
     return g.user["commercial_id"], None
 
 
+def mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu):
+    """Le mandat total n'est plus saisi : c'est la somme de ces trois montants."""
+    return frais_intermediation + commission_agence + garantie_prix_vendu
+
+
 @app.post("/api/dossiers")
 @ecriture_requise
 def create_dossier():
@@ -1028,8 +1067,11 @@ def create_dossier():
 
     client = (data.get("client") or "").strip()
     voiture = (data.get("voiture") or "").strip()
-    mandat_total = data.get("mandat_total")
-    if not client or not voiture or mandat_total is None or float(mandat_total) <= 0:
+    frais_intermediation = float(data.get("frais_intermediation") or 0)
+    commission_agence = float(data.get("commission_agence") or 0)
+    garantie_prix_vendu = float(data.get("garantie_prix_vendu") or 0)
+    mandat_total = mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu)
+    if not client or not voiture or mandat_total <= 0:
         return jsonify(error="Client, voiture et mandat total (>0) sont requis"), 400
 
     db = get_db()
@@ -1038,8 +1080,8 @@ def create_dossier():
 
     cur = db.execute(
         """INSERT INTO dossiers
-           (commercial_id, date, client, voiture, plaque, garantie_achat, garantie_prix_vendu, mandat_total, frais_intermediation)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (commercial_id, date, client, voiture, plaque, garantie_achat, garantie_prix_vendu, mandat_total, frais_intermediation, nettoyage, commission_agence)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             commercial_id,
             data.get("date") or str(date.today()),
@@ -1047,9 +1089,11 @@ def create_dossier():
             voiture,
             (data.get("plaque") or "").strip().upper(),
             float(data.get("garantie_achat") or 0),
-            float(data.get("garantie_prix_vendu") or 0),
-            float(mandat_total),
-            float(data.get("frais_intermediation") or 0),
+            garantie_prix_vendu,
+            mandat_total,
+            frais_intermediation,
+            float(data.get("nettoyage") or 0),
+            commission_agence,
         ),
     )
     db.commit()
@@ -1079,9 +1123,14 @@ def update_dossier(dossier_id):
     if g.user["role"] == "admin" and data.get("commercial_id"):
         commercial_id = data["commercial_id"]
 
+    frais_intermediation = float(data.get("frais_intermediation", row["frais_intermediation"]) or 0)
+    commission_agence = float(data.get("commission_agence", row["commission_agence"]) or 0)
+    garantie_prix_vendu = float(data.get("garantie_prix_vendu", row["garantie_prix_vendu"]) or 0)
+    mandat_total = mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu)
+
     db.execute(
         """UPDATE dossiers SET commercial_id = ?, date = ?, client = ?, voiture = ?, plaque = ?,
-           garantie_achat = ?, garantie_prix_vendu = ?, mandat_total = ?, frais_intermediation = ? WHERE id = ?""",
+           garantie_achat = ?, garantie_prix_vendu = ?, mandat_total = ?, frais_intermediation = ?, nettoyage = ?, commission_agence = ? WHERE id = ?""",
         (
             commercial_id,
             data.get("date", row["date"]),
@@ -1089,9 +1138,11 @@ def update_dossier(dossier_id):
             (data.get("voiture", row["voiture"]) or "").strip(),
             (data.get("plaque", row["plaque"]) or "").strip().upper(),
             float(data.get("garantie_achat", row["garantie_achat"]) or 0),
-            float(data.get("garantie_prix_vendu", row["garantie_prix_vendu"]) or 0),
-            float(data.get("mandat_total", row["mandat_total"]) or 0),
-            float(data.get("frais_intermediation", row["frais_intermediation"]) or 0),
+            garantie_prix_vendu,
+            mandat_total,
+            frais_intermediation,
+            float(data.get("nettoyage", row["nettoyage"]) or 0),
+            commission_agence,
             dossier_id,
         ),
     )
@@ -1108,6 +1159,217 @@ def delete_dossier(dossier_id):
     if row is None:
         return jsonify(error="Dossier introuvable"), 404
     db.execute("DELETE FROM dossiers WHERE id = ?", (dossier_id,))
+    db.commit()
+    return jsonify(ok=True)
+
+
+# ---------- Routes: refacturation ----------
+#
+# Suivi mensuel (mois courant uniquement, comme les avis Google) du volume de leads
+# par commercial pour Call center et Leads Meta, et du montant Leboncoin. Le nombre
+# est saisi par le commercial lui-même ; les montants (prix unitaire des deux
+# premières catégories, montant Leboncoin par commercial) sont fixés par l'admin.
+
+
+def get_tarifs_refacturation(db):
+    rows = db.execute("SELECT categorie, prix_unitaire FROM tarifs_refacturation").fetchall()
+    return {r["categorie"]: r["prix_unitaire"] for r in rows}
+
+
+def refacturation_ligne(row, tarifs):
+    montant_call_center = row["nombre_call_center"] * tarifs.get("call_center", 0)
+    montant_leads_meta = row["nombre_leads_meta"] * tarifs.get("leads_meta", 0)
+    return {
+        "nombre_call_center": row["nombre_call_center"],
+        "nombre_leads_meta": row["nombre_leads_meta"],
+        "montant_call_center": montant_call_center,
+        "montant_leads_meta": montant_leads_meta,
+        "montant_leboncoin": row["montant_leboncoin"],
+        "total": montant_call_center + montant_leads_meta + row["montant_leboncoin"],
+    }
+
+
+@app.get("/api/refacturation")
+@login_required
+def get_refacturation():
+    db = get_db()
+    mois = datetime.utcnow().strftime("%Y-%m")
+    tarifs = get_tarifs_refacturation(db)
+
+    if peut_tout_voir(g.user):
+        commerciaux_rows = db.execute("SELECT * FROM commerciaux ORDER BY nom").fetchall()
+    else:
+        commerciaux_rows = db.execute(
+            "SELECT * FROM commerciaux WHERE id = ?", (g.user["commercial_id"],)
+        ).fetchall()
+
+    vide = {"nombre_call_center": 0, "nombre_leads_meta": 0, "montant_leboncoin": 0}
+    lignes = []
+    for com in commerciaux_rows:
+        row = db.execute(
+            "SELECT * FROM refacturations WHERE commercial_id = ? AND mois = ?", (com["id"], mois)
+        ).fetchone()
+        ligne = refacturation_ligne(row if row is not None else vide, tarifs)
+        ligne["commercial_id"] = com["id"]
+        ligne["commercial_nom"] = com["nom"]
+        lignes.append(ligne)
+
+    return jsonify(mois=mois, tarifs=tarifs, lignes=lignes)
+
+
+@app.put("/api/refacturation/nombre")
+@ecriture_requise
+def update_refacturation_nombre():
+    data = request.get_json(silent=True) or {}
+    categorie = data.get("categorie")
+    if categorie not in ("call_center", "leads_meta"):
+        return jsonify(error="Catégorie invalide"), 400
+
+    if g.user["role"] == "admin":
+        commercial_id = data.get("commercial_id")
+        if not commercial_id:
+            return jsonify(error="commercial_id requis"), 400
+    else:
+        commercial_id = g.user["commercial_id"]
+
+    try:
+        nombre = int(data.get("nombre") or 0)
+    except (TypeError, ValueError):
+        return jsonify(error="Nombre invalide"), 400
+    if nombre < 0:
+        return jsonify(error="Nombre invalide"), 400
+
+    db = get_db()
+    if not db.execute("SELECT 1 FROM commerciaux WHERE id = ?", (commercial_id,)).fetchone():
+        return jsonify(error="Commercial inconnu"), 400
+
+    mois = datetime.utcnow().strftime("%Y-%m")
+    colonne = "nombre_call_center" if categorie == "call_center" else "nombre_leads_meta"
+    db.execute(
+        f"""INSERT INTO refacturations (commercial_id, mois, {colonne}) VALUES (?, ?, ?)
+            ON CONFLICT(commercial_id, mois) DO UPDATE SET {colonne} = excluded.{colonne}""",
+        (commercial_id, mois, nombre),
+    )
+    db.commit()
+    return jsonify(ok=True)
+
+
+@app.put("/api/refacturation/leboncoin")
+@admin_required
+def update_refacturation_leboncoin():
+    data = request.get_json(silent=True) or {}
+    commercial_id = data.get("commercial_id")
+    if not commercial_id:
+        return jsonify(error="commercial_id requis"), 400
+    try:
+        montant = float(data.get("montant") or 0)
+    except (TypeError, ValueError):
+        return jsonify(error="Montant invalide"), 400
+
+    db = get_db()
+    if not db.execute("SELECT 1 FROM commerciaux WHERE id = ?", (commercial_id,)).fetchone():
+        return jsonify(error="Commercial inconnu"), 400
+
+    mois = datetime.utcnow().strftime("%Y-%m")
+    db.execute(
+        """INSERT INTO refacturations (commercial_id, mois, montant_leboncoin) VALUES (?, ?, ?)
+           ON CONFLICT(commercial_id, mois) DO UPDATE SET montant_leboncoin = excluded.montant_leboncoin""",
+        (commercial_id, mois, montant),
+    )
+    db.commit()
+    return jsonify(ok=True)
+
+
+@app.put("/api/refacturation/tarifs")
+@admin_required
+def update_refacturation_tarif():
+    data = request.get_json(silent=True) or {}
+    categorie = data.get("categorie")
+    if categorie not in ("call_center", "leads_meta"):
+        return jsonify(error="Catégorie invalide"), 400
+    try:
+        prix = float(data.get("prix_unitaire") or 0)
+    except (TypeError, ValueError):
+        return jsonify(error="Prix invalide"), 400
+
+    db = get_db()
+    db.execute(
+        "INSERT INTO tarifs_refacturation (categorie, prix_unitaire) VALUES (?, ?) "
+        "ON CONFLICT(categorie) DO UPDATE SET prix_unitaire = excluded.prix_unitaire",
+        (categorie, prix),
+    )
+    db.commit()
+    return jsonify(ok=True)
+
+
+# ---------- Routes: charges fixes (admin uniquement) ----------
+#
+# Liste libre de postes de charges (nom + montant), sans notion de mois : une fois
+# créée, une charge reste valable tant qu'elle n'est pas modifiée ou supprimée à la
+# main. Contrairement à la refacturation, ce n'est pas un compteur mensuel.
+
+
+def charge_fixe_dict(row):
+    return {"id": row["id"], "nom": row["nom"], "montant": row["montant"]}
+
+
+@app.get("/api/charges-fixes")
+@admin_required
+def list_charges_fixes():
+    db = get_db()
+    rows = db.execute("SELECT * FROM charges_fixes ORDER BY id").fetchall()
+    return jsonify([charge_fixe_dict(r) for r in rows])
+
+
+@app.post("/api/charges-fixes")
+@admin_required
+def create_charge_fixe():
+    data = request.get_json(silent=True) or {}
+    nom = (data.get("nom") or "").strip()
+    try:
+        montant = float(data.get("montant") or 0)
+    except (TypeError, ValueError):
+        return jsonify(error="Montant invalide"), 400
+    if not nom or montant <= 0:
+        return jsonify(error="Nom et montant (>0) sont requis"), 400
+
+    db = get_db()
+    cur = db.execute("INSERT INTO charges_fixes (nom, montant) VALUES (?, ?)", (nom, montant))
+    db.commit()
+    row = db.execute("SELECT * FROM charges_fixes WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify(charge_fixe_dict(row)), 201
+
+
+@app.put("/api/charges-fixes/<int:charge_id>")
+@admin_required
+def update_charge_fixe(charge_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM charges_fixes WHERE id = ?", (charge_id,)).fetchone()
+    if row is None:
+        return jsonify(error="Charge introuvable"), 404
+
+    data = request.get_json(silent=True) or {}
+    nom = (data.get("nom", row["nom"]) or "").strip()
+    try:
+        montant = float(data.get("montant", row["montant"]) or 0)
+    except (TypeError, ValueError):
+        return jsonify(error="Montant invalide"), 400
+    if not nom or montant <= 0:
+        return jsonify(error="Nom et montant (>0) sont requis"), 400
+
+    db.execute("UPDATE charges_fixes SET nom = ?, montant = ? WHERE id = ?", (nom, montant, charge_id))
+    db.commit()
+    row = db.execute("SELECT * FROM charges_fixes WHERE id = ?", (charge_id,)).fetchone()
+    return jsonify(charge_fixe_dict(row))
+
+
+@app.delete("/api/charges-fixes/<int:charge_id>")
+@admin_required
+def delete_charge_fixe(charge_id):
+    db = get_db()
+    if not db.execute("SELECT 1 FROM charges_fixes WHERE id = ?", (charge_id,)).fetchone():
+        return jsonify(error="Charge introuvable"), 404
+    db.execute("DELETE FROM charges_fixes WHERE id = ?", (charge_id,))
     db.commit()
     return jsonify(ok=True)
 

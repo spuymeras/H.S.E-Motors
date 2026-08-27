@@ -210,9 +210,17 @@ def migrer_db(db):
 
 
 def init_db():
-    db = sqlite3.connect(DB_PATH)
+    db = sqlite3.connect(DB_PATH, timeout=30)
     db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
+    db.commit()
+    # BEGIN IMMEDIATE prend le verrou d'écriture dès le début de la transaction : gunicorn
+    # démarre plusieurs workers en même temps et chacun appelle init_db() sur la même base —
+    # sans ça, chacun vérifierait "colonne/compte absent ?" en parallèle avant qu'aucun n'ait
+    # écrit, et tenterait la même migration ou le même seed en double (ALTER TABLE en double →
+    # "duplicate column name", ou double création du compte admin → UNIQUE constraint failed).
+    # Ici, tout ce qui est check-then-write est regroupé sous un seul verrou, donc sérialisé.
+    db.execute("BEGIN IMMEDIATE")
     migrer_db(db)
     already_seeded = db.execute("SELECT COUNT(*) FROM entreprises").fetchone()[0] > 0
     if not already_seeded:

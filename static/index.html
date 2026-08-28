@@ -1115,6 +1115,8 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
             <th style={{ ...styles.th, textAlign: "right" }}>Gar. vendu</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Gar. achat</th>
             <th style={{ ...styles.th, textAlign: "right" }}>TCA (18%)</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Achat livraison</th>
+            <th style={{ ...styles.th, textAlign: "right" }}>Vente livraison</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Nettoyage</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Cash Sentinel</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Mandat total TTC</th>
@@ -1148,6 +1150,10 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.garantie_prix_vendu)}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.garantie_achat)}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#C58AF0" }}>{fmtEUR(d.tca)}</td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8746B" }}>
+                {d.achat_livraison > 0 ? `-${fmtEUR(d.achat_livraison)}` : fmtEUR(d.achat_livraison)}
+              </td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.vente_livraison)}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8746B" }}>
                 {d.nettoyage > 0 ? `-${fmtEUR(d.nettoyage)}` : fmtEUR(d.nettoyage)}
               </td>
@@ -1194,11 +1200,16 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
   const [fraisIntermediation, setFraisIntermediation] = useState(dossier.frais_intermediation ?? "");
   const [nettoyage, setNettoyage] = useState(dossier.nettoyage ?? "");
   const [commissionAgence, setCommissionAgence] = useState(dossier.commission_agence ?? "");
+  const [achatLivraison, setAchatLivraison] = useState(dossier.achat_livraison ?? "");
+  const [venteLivraison, setVenteLivraison] = useState(dossier.vente_livraison ?? "");
   const [date, setDate] = useState(dossier.date || new Date().toISOString().slice(0, 10));
 
-  // Mandat total n'est plus saisi : il se déduit de ces trois montants.
+  // Mandat total n'est plus saisi : il se déduit de ces montants.
   const mandatTotal =
-    (Number(commissionAgence) || 0) + (Number(fraisIntermediation) || 0) + (Number(garantiePrixVendu) || 0);
+    (Number(commissionAgence) || 0) +
+    (Number(fraisIntermediation) || 0) +
+    (Number(garantiePrixVendu) || 0) +
+    (Number(venteLivraison) || 0);
 
   const valide = client.trim() !== "" && voiture.trim() !== "" && mandatTotal > 0;
 
@@ -1288,6 +1299,30 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
         </div>
 
         <label style={styles.champLabel}>
+          Achat livraison (€)
+          <input
+            style={styles.input}
+            type="number"
+            value={achatLivraison}
+            onChange={(e) => setAchatLivraison(e.target.value)}
+            placeholder="0"
+          />
+        </label>
+        <div style={styles.tauxAutoAide}>À compléter en cas de besoin — déduit du total HT</div>
+
+        <label style={styles.champLabel}>
+          Vente livraison (€)
+          <input
+            style={styles.input}
+            type="number"
+            value={venteLivraison}
+            onChange={(e) => setVenteLivraison(e.target.value)}
+            placeholder="0"
+          />
+        </label>
+        <div style={styles.tauxAutoAide}>À compléter en cas de besoin — s'ajoute au mandat total</div>
+
+        <label style={styles.champLabel}>
           Nettoyage (€)
           <input
             style={styles.input}
@@ -1305,7 +1340,7 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
             {fmtEUR(mandatTotal)}
           </span>
         </div>
-        <div style={styles.tauxAutoAide}>Calculé automatiquement : commission d'agence + frais d'intermédiation + garantie prix vendu</div>
+        <div style={styles.tauxAutoAide}>Calculé automatiquement : commission d'agence + frais d'intermédiation + garantie prix vendu + vente livraison</div>
 
         <button
           style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}
@@ -1324,6 +1359,8 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
               frais_intermediation: Number(fraisIntermediation) || 0,
               nettoyage: Number(nettoyage) || 0,
               commission_agence: Number(commissionAgence) || 0,
+              achat_livraison: Number(achatLivraison) || 0,
+              vente_livraison: Number(venteLivraison) || 0,
               date,
             })
           }

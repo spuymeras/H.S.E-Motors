@@ -114,6 +114,8 @@ CREATE TABLE IF NOT EXISTS dossiers (
     frais_intermediation REAL NOT NULL DEFAULT 0,
     nettoyage REAL NOT NULL DEFAULT 0,
     commission_agence REAL NOT NULL DEFAULT 0,
+    achat_livraison REAL NOT NULL DEFAULT 0,
+    vente_livraison REAL NOT NULL DEFAULT 0,
     exporte_excel_le TEXT
 );
 
@@ -175,6 +177,10 @@ def migrer_db(db):
         db.execute("ALTER TABLE dossiers ADD COLUMN nettoyage REAL NOT NULL DEFAULT 0")
     if "commission_agence" not in colonnes:
         db.execute("ALTER TABLE dossiers ADD COLUMN commission_agence REAL NOT NULL DEFAULT 0")
+    if "achat_livraison" not in colonnes:
+        db.execute("ALTER TABLE dossiers ADD COLUMN achat_livraison REAL NOT NULL DEFAULT 0")
+    if "vente_livraison" not in colonnes:
+        db.execute("ALTER TABLE dossiers ADD COLUMN vente_livraison REAL NOT NULL DEFAULT 0")
 
     colonnes_commerciaux = {row["name"] for row in db.execute("PRAGMA table_info(commerciaux)")}
     if "objectif_ca_ht_brut" not in colonnes_commerciaux:
@@ -717,12 +723,14 @@ BONUS_AVIS_GOOGLE = 0.05
 
 def total_ht_ligne(row):
     tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 0.18
-    return (row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL - row["nettoyage"]) / 1.2
+    return (
+        row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL - row["nettoyage"] - row["achat_livraison"]
+    ) / 1.2
 
 
 def ca_ht_net_mensuel(db, commercial_id, mois):
     rows = db.execute(
-        "SELECT garantie_achat, garantie_prix_vendu, mandat_total, nettoyage FROM dossiers "
+        "SELECT garantie_achat, garantie_prix_vendu, mandat_total, nettoyage, achat_livraison FROM dossiers "
         "WHERE commercial_id = ? AND substr(date, 1, 7) = ?",
         (commercial_id, mois),
     ).fetchall()
@@ -984,7 +992,9 @@ CASH_SENTINEL = 43.20
 
 def dossier_dict(row, com, ent, db):
     tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 0.18
-    total_ht = (row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL - row["nettoyage"]) / 1.2
+    total_ht = (
+        row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL - row["nettoyage"] - row["achat_livraison"]
+    ) / 1.2
     taux = taux_effectif(db, com, row["date"][:7])
     commission = total_ht * taux
     return {
@@ -1004,6 +1014,8 @@ def dossier_dict(row, com, ent, db):
         "frais_intermediation": row["frais_intermediation"],
         "nettoyage": row["nettoyage"],
         "commission_agence": row["commission_agence"],
+        "achat_livraison": row["achat_livraison"],
+        "vente_livraison": row["vente_livraison"],
         "tca": tca,
         "cash_sentinel": CASH_SENTINEL,
         "total_ht": total_ht,
@@ -1052,9 +1064,9 @@ def resolve_commercial_id(data):
     return g.user["commercial_id"], None
 
 
-def mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu):
-    """Le mandat total n'est plus saisi : c'est la somme de ces trois montants."""
-    return frais_intermediation + commission_agence + garantie_prix_vendu
+def mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu, vente_livraison):
+    """Le mandat total n'est plus saisi : c'est la somme de ces montants."""
+    return frais_intermediation + commission_agence + garantie_prix_vendu + vente_livraison
 
 
 @app.post("/api/dossiers")
@@ -1070,7 +1082,8 @@ def create_dossier():
     frais_intermediation = float(data.get("frais_intermediation") or 0)
     commission_agence = float(data.get("commission_agence") or 0)
     garantie_prix_vendu = float(data.get("garantie_prix_vendu") or 0)
-    mandat_total = mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu)
+    vente_livraison = float(data.get("vente_livraison") or 0)
+    mandat_total = mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu, vente_livraison)
     if not client or not voiture or mandat_total <= 0:
         return jsonify(error="Client, voiture et mandat total (>0) sont requis"), 400
 
@@ -1080,8 +1093,8 @@ def create_dossier():
 
     cur = db.execute(
         """INSERT INTO dossiers
-           (commercial_id, date, client, voiture, plaque, garantie_achat, garantie_prix_vendu, mandat_total, frais_intermediation, nettoyage, commission_agence)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (commercial_id, date, client, voiture, plaque, garantie_achat, garantie_prix_vendu, mandat_total, frais_intermediation, nettoyage, commission_agence, achat_livraison, vente_livraison)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             commercial_id,
             data.get("date") or str(date.today()),
@@ -1094,6 +1107,8 @@ def create_dossier():
             frais_intermediation,
             float(data.get("nettoyage") or 0),
             commission_agence,
+            float(data.get("achat_livraison") or 0),
+            vente_livraison,
         ),
     )
     db.commit()
@@ -1126,11 +1141,13 @@ def update_dossier(dossier_id):
     frais_intermediation = float(data.get("frais_intermediation", row["frais_intermediation"]) or 0)
     commission_agence = float(data.get("commission_agence", row["commission_agence"]) or 0)
     garantie_prix_vendu = float(data.get("garantie_prix_vendu", row["garantie_prix_vendu"]) or 0)
-    mandat_total = mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu)
+    vente_livraison = float(data.get("vente_livraison", row["vente_livraison"]) or 0)
+    mandat_total = mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu, vente_livraison)
 
     db.execute(
         """UPDATE dossiers SET commercial_id = ?, date = ?, client = ?, voiture = ?, plaque = ?,
-           garantie_achat = ?, garantie_prix_vendu = ?, mandat_total = ?, frais_intermediation = ?, nettoyage = ?, commission_agence = ? WHERE id = ?""",
+           garantie_achat = ?, garantie_prix_vendu = ?, mandat_total = ?, frais_intermediation = ?, nettoyage = ?,
+           commission_agence = ?, achat_livraison = ?, vente_livraison = ? WHERE id = ?""",
         (
             commercial_id,
             data.get("date", row["date"]),
@@ -1143,6 +1160,8 @@ def update_dossier(dossier_id):
             frais_intermediation,
             float(data.get("nettoyage", row["nettoyage"]) or 0),
             commission_agence,
+            float(data.get("achat_livraison", row["achat_livraison"]) or 0),
+            vente_livraison,
             dossier_id,
         ),
     )

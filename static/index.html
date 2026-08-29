@@ -65,7 +65,7 @@ async function api(path, options = {}) {
 }
 
 const fmtEUR = (n) =>
-  new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(n || 0);
+  new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(n || 0);
 
 // ---------- App ----------
 

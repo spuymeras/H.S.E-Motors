@@ -1,11 +1,11 @@
 import io
 import json
 import os
-import smtplib
 import sqlite3
 import secrets
+import urllib.error
+import urllib.request
 from datetime import date, datetime, timedelta
-from email.mime.text import MIMEText
 from functools import wraps
 from pathlib import Path
 
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS utilisateurs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     identifiant TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('admin', 'commercial', 'animateur')),
+    role TEXT NOT NULL CHECK(role IN ('admin', 'admin_secondaire', 'commercial', 'animateur')),
     commercial_id INTEGER REFERENCES commerciaux(id),
     nom TEXT,
     kpi_order TEXT,
@@ -116,7 +116,15 @@ CREATE TABLE IF NOT EXISTS dossiers (
     commission_agence REAL NOT NULL DEFAULT 0,
     achat_livraison REAL NOT NULL DEFAULT 0,
     vente_livraison REAL NOT NULL DEFAULT 0,
-    exporte_excel_le TEXT
+    exporte_excel_le TEXT,
+    role_commercial TEXT NOT NULL DEFAULT 'les_deux'
+);
+
+CREATE TABLE IF NOT EXISTS retrocommissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dossier_id INTEGER NOT NULL UNIQUE REFERENCES dossiers(id),
+    commercial_id INTEGER NOT NULL REFERENCES commerciaux(id),
+    role TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS reinitialisations_mdp (
@@ -137,6 +145,20 @@ CREATE TABLE IF NOT EXISTS tentatives (
 );
 
 CREATE TABLE IF NOT EXISTS avis_google (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dossier_id INTEGER NOT NULL REFERENCES dossiers(id),
+    commercial_id INTEGER NOT NULL REFERENCES commerciaux(id),
+    nom_client TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('vendeur', 'acheteur')),
+    cree_le TEXT NOT NULL,
+    UNIQUE(dossier_id, role)
+);
+
+-- Ancien compteur mensuel d'avis Google (avant les fiches individuelles), conservé en
+-- lecture seule pour les mois déjà écoulés au moment de la migration (voir migrer_db
+-- et avis_obtenus_mensuel). Créée vide dès le premier démarrage sur les installations
+-- neuves, pour que le code n'ait jamais à distinguer "table absente" de "table vide".
+CREATE TABLE IF NOT EXISTS avis_google_legacy (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     commercial_id INTEGER NOT NULL REFERENCES commerciaux(id),
     mois TEXT NOT NULL,
@@ -161,6 +183,8 @@ CREATE TABLE IF NOT EXISTS tarifs_refacturation (
 
 CREATE TABLE IF NOT EXISTS charges_fixes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entreprise_id INTEGER NOT NULL REFERENCES entreprises(id),
+    mois TEXT NOT NULL,
     nom TEXT NOT NULL,
     montant REAL NOT NULL DEFAULT 0
 );
@@ -181,10 +205,14 @@ def migrer_db(db):
         db.execute("ALTER TABLE dossiers ADD COLUMN achat_livraison REAL NOT NULL DEFAULT 0")
     if "vente_livraison" not in colonnes:
         db.execute("ALTER TABLE dossiers ADD COLUMN vente_livraison REAL NOT NULL DEFAULT 0")
+    if "role_commercial" not in colonnes:
+        db.execute("ALTER TABLE dossiers ADD COLUMN role_commercial TEXT NOT NULL DEFAULT 'les_deux'")
 
     colonnes_commerciaux = {row["name"] for row in db.execute("PRAGMA table_info(commerciaux)")}
     if "objectif_ca_ht_brut" not in colonnes_commerciaux:
         db.execute("ALTER TABLE commerciaux ADD COLUMN objectif_ca_ht_brut REAL")
+    if "supprime" not in colonnes_commerciaux:
+        db.execute("ALTER TABLE commerciaux ADD COLUMN supprime INTEGER NOT NULL DEFAULT 0")
 
     colonnes_entreprises = {row["name"] for row in db.execute("PRAGMA table_info(entreprises)")}
     if "objectif_ca_ht_brut" not in colonnes_entreprises:
@@ -219,6 +247,83 @@ def migrer_db(db):
             DROP TABLE utilisateurs;
             ALTER TABLE utilisateurs_nouveau RENAME TO utilisateurs;
             """
+        )
+
+    schema_utilisateurs = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'utilisateurs'"
+    ).fetchone()[0]
+    if "'admin_secondaire'" not in schema_utilisateurs:
+        db.executescript(
+            """
+            CREATE TABLE utilisateurs_nouveau (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identifiant TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('admin', 'admin_secondaire', 'commercial', 'animateur')),
+                commercial_id INTEGER REFERENCES commerciaux(id),
+                nom TEXT,
+                kpi_order TEXT,
+                kpi_reduits TEXT
+            );
+            INSERT INTO utilisateurs_nouveau (id, identifiant, password_hash, role, commercial_id, nom, kpi_order, kpi_reduits)
+                SELECT id, identifiant, password_hash, role, commercial_id, nom, kpi_order, kpi_reduits FROM utilisateurs;
+            DROP TABLE utilisateurs;
+            ALTER TABLE utilisateurs_nouveau RENAME TO utilisateurs;
+            """
+        )
+
+    # Charges fixes : passage d'une liste globale unique à une liste par entreprise et
+    # par mois. Les anciennes lignes (sans notion d'entreprise/mois) sont rattachées à
+    # la première entreprise existante et au mois courant plutôt que d'être perdues.
+    colonnes_charges = {row["name"] for row in db.execute("PRAGMA table_info(charges_fixes)")}
+    if colonnes_charges and "entreprise_id" not in colonnes_charges:
+        anciennes_charges = db.execute("SELECT nom, montant FROM charges_fixes").fetchall()
+        premiere_entreprise = db.execute("SELECT id FROM entreprises ORDER BY id LIMIT 1").fetchone()
+        mois_courant = datetime.utcnow().strftime("%Y-%m")
+        db.execute("DROP TABLE charges_fixes")
+        db.execute(
+            """CREATE TABLE charges_fixes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entreprise_id INTEGER NOT NULL REFERENCES entreprises(id),
+                mois TEXT NOT NULL,
+                nom TEXT NOT NULL,
+                montant REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        if premiere_entreprise is not None:
+            for ancienne in anciennes_charges:
+                db.execute(
+                    "INSERT INTO charges_fixes (entreprise_id, mois, nom, montant) VALUES (?, ?, ?, ?)",
+                    (premiere_entreprise["id"], mois_courant, ancienne["nom"], ancienne["montant"]),
+                )
+
+    # Avis Google : passage d'un simple compteur mensuel saisi par l'admin à des fiches
+    # individuelles (nom du client, vendeur/acheteur, dossier lié) ajoutées par le
+    # commercial ou l'admin. L'ancienne table ne contenait qu'un nombre — sans nom ni
+    # dossier associé, impossible à convertir en fiche détaillée — mais elle contenait
+    # de vraies données (pas de simples zéros de test) : on la renomme donc en table
+    # "legacy" conservée telle quelle plutôt que de la supprimer, pour que les mois déjà
+    # écoulés gardent exactement le nombre d'avis déjà utilisé dans leurs commissions.
+    # Seuls les mois à partir de maintenant utilisent la nouvelle table structurée (voir
+    # avis_obtenus_mensuel) — le mois en cours au moment de la migration doit donc être
+    # ressaisi via la nouvelle interface s'il contenait déjà des avis.
+    colonnes_avis = {row["name"] for row in db.execute("PRAGMA table_info(avis_google)")}
+    if colonnes_avis and "dossier_id" not in colonnes_avis:
+        # avis_google_legacy existe déjà (vide) depuis le SCHEMA exécuté juste avant :
+        # on la supprime pour faire place à l'ancienne table, qui contient les vraies
+        # données à conserver.
+        db.execute("DROP TABLE IF EXISTS avis_google_legacy")
+        db.execute("ALTER TABLE avis_google RENAME TO avis_google_legacy")
+        db.execute(
+            """CREATE TABLE avis_google (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dossier_id INTEGER NOT NULL REFERENCES dossiers(id),
+                commercial_id INTEGER NOT NULL REFERENCES commerciaux(id),
+                nom_client TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('vendeur', 'acheteur')),
+                cree_le TEXT NOT NULL,
+                UNIQUE(dossier_id, role)
+            )"""
         )
 
     schema_commerciaux = db.execute(
@@ -375,14 +480,36 @@ def login_required(fn):
     return wrapper
 
 
+def est_type_admin(user):
+    """Admin principal ou admin secondaire : les deux gèrent dossiers, équipe et
+    entreprises à l'identique. Seuls les tarifs de refacturation et les charges
+    fixes restent réservés à l'admin principal (voir admin_complet_requis)."""
+    return user["role"] in ("admin", "admin_secondaire")
+
+
 def admin_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         user = current_user()
         if user is None:
             return jsonify(error="Non authentifié"), 401
-        if user["role"] != "admin":
+        if not est_type_admin(user):
             return jsonify(error="Réservé aux administrateurs"), 403
+        g.user = user
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+def admin_complet_requis(fn):
+    """Comme admin_required, mais exclut l'admin secondaire : réservé aux actions
+    qui lui sont explicitement interdites (tarifs de refacturation, charges fixes)."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user()
+        if user is None:
+            return jsonify(error="Non authentifié"), 401
+        if user["role"] != "admin":
+            return jsonify(error="Réservé à l'administrateur principal"), 403
         g.user = user
         return fn(*args, **kwargs)
     return wrapper
@@ -403,7 +530,7 @@ def ecriture_requise(fn):
 
 
 def peut_tout_voir(user):
-    return user["role"] in ("admin", "animateur")
+    return user["role"] in ("admin", "admin_secondaire", "animateur")
 
 
 def user_public(user, db):
@@ -418,6 +545,15 @@ def user_public(user, db):
             "id": user["id"],
             "role": "admin",
             "nom": user["nom"] or "Administrateur",
+            "identifiant": user["identifiant"],
+            "kpi_order": kpi_order,
+            "kpi_reduits": kpi_reduits,
+        }
+    if user["role"] == "admin_secondaire":
+        return {
+            "id": user["id"],
+            "role": "admin_secondaire",
+            "nom": user["nom"] or "Administrateur secondaire",
             "identifiant": user["identifiant"],
             "kpi_order": kpi_order,
             "kpi_reduits": kpi_reduits,
@@ -483,30 +619,47 @@ def logout():
     return jsonify(ok=True)
 
 
-def envoyer_code_recuperation(code):
-    smtp_user = parametre_email("SMTP_USER")
-    smtp_password = parametre_email("SMTP_PASSWORD")
+def envoyer_code_recuperation(code, identifiant):
+    """Envoi via l'API HTTP de Resend plutôt qu'en SMTP direct : de nombreux hébergeurs
+    (dont Railway) bloquent les ports SMTP sortants (587, 465) par défaut pour lutter
+    contre le spam — une requête HTTPS classique passe toujours."""
+    api_key = parametre_email("RESEND_API_KEY")
+    expediteur = parametre_email("RESEND_FROM") or "onboarding@resend.dev"
     admin_recovery_email = parametre_email("ADMIN_RECOVERY_EMAIL")
-    smtp_host = parametre_email("SMTP_HOST") or "smtp.gmail.com"
-    smtp_port = int(parametre_email("SMTP_PORT") or 587)
 
-    if not smtp_user or not smtp_password or not admin_recovery_email:
+    if not api_key or not admin_recovery_email:
         raise RuntimeError(
-            "L'envoi d'email n'est pas configuré. Remplissez email_config.py (SMTP_USER, "
-            "SMTP_PASSWORD, ADMIN_RECOVERY_EMAIL) puis relancez le serveur."
+            "L'envoi d'email n'est pas configuré. Remplissez email_config.py (RESEND_API_KEY, "
+            "ADMIN_RECOVERY_EMAIL) puis relancez le serveur."
         )
-    message = MIMEText(
-        f"Voici votre code de récupération pour H.S.E Motors : {code}\n\n"
+
+    corps = (
+        f"Code de récupération pour le compte « {identifiant} » sur H.S.E Motors : {code}\n\n"
         "Ce code est valable 15 minutes. Si vous n'êtes pas à l'origine de cette demande, ignorez cet email."
     )
-    message["Subject"] = "H.S.E Motors — Code de récupération du mot de passe admin"
-    message["From"] = smtp_user
-    message["To"] = admin_recovery_email
+    payload = json.dumps(
+        {
+            "from": expediteur,
+            "to": [admin_recovery_email],
+            "subject": f"H.S.E Motors — Code de récupération ({identifiant})",
+            "text": corps,
+        }
+    ).encode("utf-8")
 
-    with smtplib.SMTP(smtp_host, smtp_port) as smtp:
-        smtp.starttls()
-        smtp.login(smtp_user, smtp_password)
-        smtp.send_message(message)
+    requete = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        method="POST",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(requete, timeout=10) as reponse:
+            reponse.read()
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Échec de l'envoi de l'email (Resend {e.code}) : {detail}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Échec de l'envoi de l'email : {e.reason}") from e
 
 
 @app.post("/api/mot-de-passe-oublie")
@@ -519,7 +672,7 @@ def demander_code_recuperation():
         return reponse_trop_de_tentatives()
 
     user = db.execute(
-        "SELECT * FROM utilisateurs WHERE identifiant = ? AND role = 'admin'", (identifiant,)
+        "SELECT * FROM utilisateurs WHERE identifiant = ? AND role IN ('admin', 'admin_secondaire')", (identifiant,)
     ).fetchone()
 
     # Réponse identique que le compte existe ou non, pour ne pas révéler les identifiants valides.
@@ -542,7 +695,7 @@ def demander_code_recuperation():
     db.commit()
 
     try:
-        envoyer_code_recuperation(code)
+        envoyer_code_recuperation(code, identifiant)
     except Exception as e:
         return jsonify(error=str(e)), 500
 
@@ -565,7 +718,7 @@ def reinitialiser_mot_de_passe():
         return reponse_trop_de_tentatives()
 
     user = db.execute(
-        "SELECT * FROM utilisateurs WHERE identifiant = ? AND role = 'admin'", (identifiant,)
+        "SELECT * FROM utilisateurs WHERE identifiant = ? AND role IN ('admin', 'admin_secondaire')", (identifiant,)
     ).fetchone()
     if user is None:
         enregistrer_tentative(db, "reinitialiser_mdp", identifiant, reussi=False)
@@ -601,6 +754,32 @@ def reinitialiser_mot_de_passe():
 @login_required
 def me():
     return jsonify(user_public(g.user, get_db()))
+
+
+@app.put("/api/mon-mot-de-passe")
+@login_required
+def changer_mon_mot_de_passe():
+    """Changement de mot de passe en libre-service, réservé aux deux comptes admin
+    (le mot de passe des commerciaux et animateurs reste géré par l'admin)."""
+    if not est_type_admin(g.user):
+        return jsonify(error="Réservé aux administrateurs"), 403
+
+    data = request.get_json(silent=True) or {}
+    mot_de_passe_actuel = data.get("mot_de_passe_actuel") or ""
+    nouveau_mot_de_passe = (data.get("nouveau_mot_de_passe") or "").strip()
+
+    if not check_password_hash(g.user["password_hash"], mot_de_passe_actuel):
+        return jsonify(error="Mot de passe actuel incorrect"), 400
+    if len(nouveau_mot_de_passe) < 6:
+        return jsonify(error="Le nouveau mot de passe doit faire au moins 6 caractères"), 400
+
+    db = get_db()
+    db.execute(
+        "UPDATE utilisateurs SET password_hash = ? WHERE id = ?",
+        (generate_password_hash(nouveau_mot_de_passe, method="pbkdf2:sha256"), g.user["id"]),
+    )
+    db.commit()
+    return jsonify(ok=True)
 
 
 @app.put("/api/preferences/kpi-order")
@@ -720,12 +899,34 @@ TAUX_AUTO_HAUT = 0.35
 # un taux personnalisé à la main n'en bénéficie pas, l'admin l'ajuste lui-même si besoin.
 BONUS_AVIS_GOOGLE = 0.05
 
+# Rétrocommission (ANNEXE 8) : quand un commercial n'a réalisé QUE l'entrée ou QUE la
+# sortie du mandat, il touche un taux fixe dédié — basé sur sa propre tranche de CA HT
+# net du mois — au lieu du taux 20/35% habituel. Un même commercial qui fait les deux
+# reste sur le taux classique : 7,5+12,5=20% et 12,5+22,5=35% retombent d'ailleurs
+# exactement sur TAUX_AUTO_BAS/TAUX_AUTO_HAUT.
+TAUX_ENTRANT_BAS = 0.075
+TAUX_ENTRANT_HAUT = 0.125
+TAUX_SORTANT_BAS = 0.125
+TAUX_SORTANT_HAUT = 0.225
+
 
 def total_ht_ligne(row):
-    tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 0.18
+    tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 18 / 118
     return (
         row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL - row["nettoyage"] - row["achat_livraison"]
     ) / 1.2
+
+
+def dossiers_retrocommission_mensuel(db, commercial_id, mois):
+    """Dossiers d'un AUTRE commercial où celui-ci est crédité via une rétrocommission
+    (entrant ou sortant seul) ce mois-ci. Compte pour sa valeur pleine, comme un
+    dossier propre — voir ANNEXE 8."""
+    return db.execute(
+        """SELECT d.garantie_achat, d.garantie_prix_vendu, d.mandat_total, d.nettoyage, d.achat_livraison
+           FROM retrocommissions r JOIN dossiers d ON d.id = r.dossier_id
+           WHERE r.commercial_id = ? AND substr(d.date, 1, 7) = ?""",
+        (commercial_id, mois),
+    ).fetchall()
 
 
 def ca_ht_net_mensuel(db, commercial_id, mois):
@@ -734,7 +935,9 @@ def ca_ht_net_mensuel(db, commercial_id, mois):
         "WHERE commercial_id = ? AND substr(date, 1, 7) = ?",
         (commercial_id, mois),
     ).fetchall()
-    return sum(total_ht_ligne(r) for r in rows)
+    total = sum(total_ht_ligne(r) for r in rows)
+    total += sum(total_ht_ligne(r) for r in dossiers_retrocommission_mensuel(db, commercial_id, mois))
+    return total
 
 
 def ca_ht_brut_mensuel(db, commercial_id, mois):
@@ -756,18 +959,35 @@ def ca_ht_brut_mensuel_entreprise(db, entreprise_id, mois):
 
 
 def nb_voitures_vendues_mensuel(db, commercial_id, mois):
-    return db.execute(
+    propres = db.execute(
         "SELECT COUNT(*) FROM dossiers WHERE commercial_id = ? AND substr(date, 1, 7) = ?",
         (commercial_id, mois),
     ).fetchone()[0]
+    return propres + len(dossiers_retrocommission_mensuel(db, commercial_id, mois))
 
 
 def avis_obtenus_mensuel(db, commercial_id, mois):
+    """Nombre d'avis Google enregistrés pour ce commercial ce mois-ci. Seuls les mois
+    déjà clos AVANT la bascule (mois strictement antérieur au mois courant) lisent
+    l'ancien compteur (avis_google_legacy) — ils ont déjà servi au calcul de commissions
+    passées, donc leur valeur reste figée. Le mois en cours au moment de la bascule
+    (même s'il avait une valeur dans l'ancien compteur) et tous les mois suivants
+    comptent exclusivement les fiches individuelles de la nouvelle table : sinon un avis
+    déjà comptabilisé dans l'ancien système resterait bloqué pour toujours et masquerait
+    les nouvelles fiches ajoutées ce mois-là (voir migrer_db)."""
+    if mois < datetime.utcnow().strftime("%Y-%m"):
+        legacy = db.execute(
+            "SELECT avis_obtenus FROM avis_google_legacy WHERE commercial_id = ? AND mois = ?",
+            (commercial_id, mois),
+        ).fetchone()
+        if legacy is not None:
+            return legacy["avis_obtenus"]
     row = db.execute(
-        "SELECT avis_obtenus FROM avis_google WHERE commercial_id = ? AND mois = ?",
+        """SELECT COUNT(*) AS n FROM avis_google a JOIN dossiers d ON d.id = a.dossier_id
+           WHERE a.commercial_id = ? AND substr(d.date, 1, 7) = ?""",
         (commercial_id, mois),
     ).fetchone()
-    return row["avis_obtenus"] if row else 0
+    return row["n"] if row else 0
 
 
 def bonus_avis_actif(db, commercial_id, mois):
@@ -790,6 +1010,22 @@ def taux_effectif(db, com, mois):
     if com["taux"] is not None:
         return com["taux"]
     return taux_automatique(db, com["id"], mois)
+
+
+def taux_partage(db, commercial_id, mois, role):
+    """Taux fixe entrant/sortant (ANNEXE 8), pour un dossier où ce commercial n'a
+    réalisé que l'entrée ou que la sortie. Toujours basé sur sa tranche automatique
+    (jamais sur un taux personnalisé — il n'y en a pas d'équivalent pour ce barème) et
+    profite du même bonus avis Google que le taux classique."""
+    ca = ca_ht_net_mensuel(db, commercial_id, mois)
+    haut = ca > SEUIL_TAUX_AUTO
+    if role == "entrant":
+        base = TAUX_ENTRANT_HAUT if haut else TAUX_ENTRANT_BAS
+    else:
+        base = TAUX_SORTANT_HAUT if haut else TAUX_SORTANT_BAS
+    if bonus_avis_actif(db, commercial_id, mois):
+        base += BONUS_AVIS_GOOGLE
+    return base
 
 
 def commercial_dict(row, db):
@@ -820,7 +1056,7 @@ def commercial_dict(row, db):
 def list_commerciaux():
     db = get_db()
     if peut_tout_voir(g.user):
-        rows = db.execute("SELECT * FROM commerciaux ORDER BY nom").fetchall()
+        rows = db.execute("SELECT * FROM commerciaux WHERE supprime = 0 ORDER BY nom").fetchall()
     else:
         rows = db.execute("SELECT * FROM commerciaux WHERE id = ?", (g.user["commercial_id"],)).fetchall()
     return jsonify([commercial_dict(r, db) for r in rows])
@@ -929,22 +1165,24 @@ def update_commercial(commercial_id):
             "UPDATE utilisateurs SET password_hash = ? WHERE commercial_id = ?",
             (generate_password_hash(nouveau_mot_de_passe, method="pbkdf2:sha256"), commercial_id),
         )
-    if "avis_obtenus" in data:
-        try:
-            avis_obtenus = int(data["avis_obtenus"])
-        except (TypeError, ValueError):
-            return jsonify(error="Nombre d'avis invalide"), 400
-        if avis_obtenus < 0:
-            return jsonify(error="Nombre d'avis invalide"), 400
-        mois_courant = datetime.utcnow().strftime("%Y-%m")
-        db.execute(
-            """INSERT INTO avis_google (commercial_id, mois, avis_obtenus) VALUES (?, ?, ?)
-               ON CONFLICT(commercial_id, mois) DO UPDATE SET avis_obtenus = excluded.avis_obtenus""",
-            (commercial_id, mois_courant, avis_obtenus),
-        )
     db.commit()
     row = db.execute("SELECT * FROM commerciaux WHERE id = ?", (commercial_id,)).fetchone()
     return jsonify(commercial_dict(row, db))
+
+
+@app.delete("/api/commerciaux/<int:commercial_id>")
+@admin_required
+def delete_commercial(commercial_id):
+    """Supprime la fiche du commercial (il disparaît de la liste, ne peut plus se
+    connecter, ne peut plus se voir assigner de nouveau dossier) sans toucher à ses
+    dossiers existants : leur historique (CA, commissions, export Excel) reste intact
+    puisque la ligne commerciaux elle-même n'est pas effacée, seulement masquée."""
+    db = get_db()
+    if not db.execute("SELECT 1 FROM commerciaux WHERE id = ?", (commercial_id,)).fetchone():
+        return jsonify(error="Commercial introuvable"), 404
+    db.execute("UPDATE commerciaux SET supprime = 1, actif = 0 WHERE id = ?", (commercial_id,))
+    db.commit()
+    return jsonify(ok=True)
 
 
 # ---------- Routes: animateurs (accès lecture seule, toutes entreprises) ----------
@@ -991,12 +1229,31 @@ CASH_SENTINEL = 43.20
 
 
 def dossier_dict(row, com, ent, db):
-    tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 0.18
+    tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 18 / 118
     total_ht = (
         row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL - row["nettoyage"] - row["achat_livraison"]
     ) / 1.2
-    taux = taux_effectif(db, com, row["date"][:7])
+    mois = row["date"][:7]
+    role_commercial = row["role_commercial"]
+
+    if role_commercial == "les_deux":
+        taux = taux_effectif(db, com, mois)
+    else:
+        taux = taux_partage(db, com["id"], mois, role_commercial)
     commission = total_ht * taux
+
+    retro_row = db.execute("SELECT * FROM retrocommissions WHERE dossier_id = ?", (row["id"],)).fetchone()
+    retrocommission = None
+    if retro_row is not None:
+        retro_com = db.execute("SELECT * FROM commerciaux WHERE id = ?", (retro_row["commercial_id"],)).fetchone()
+        retro_taux = taux_partage(db, retro_row["commercial_id"], mois, retro_row["role"])
+        retrocommission = {
+            "commercial_id": retro_row["commercial_id"],
+            "commercial_nom": retro_com["nom"] if retro_com else "—",
+            "role": retro_row["role"],
+            "commission": total_ht * retro_taux,
+        }
+
     return {
         "id": row["id"],
         "commercial_id": row["commercial_id"],
@@ -1019,6 +1276,8 @@ def dossier_dict(row, com, ent, db):
         "tca": tca,
         "cash_sentinel": CASH_SENTINEL,
         "total_ht": total_ht,
+        "role_commercial": role_commercial,
+        "retrocommission": retrocommission,
         "commission": commission,
     }
 
@@ -1056,7 +1315,7 @@ def list_dossiers():
 
 
 def resolve_commercial_id(data):
-    if g.user["role"] == "admin":
+    if est_type_admin(g.user):
         commercial_id = data.get("commercial_id")
         if not commercial_id:
             return None, (jsonify(error="commercial_id requis"), 400)
@@ -1067,6 +1326,45 @@ def resolve_commercial_id(data):
 def mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu, vente_livraison):
     """Le mandat total n'est plus saisi : c'est la somme de ces montants."""
     return frais_intermediation + commission_agence + garantie_prix_vendu + vente_livraison
+
+
+def parser_role_et_retrocommission(data, commercial_id, db):
+    """Valide le rôle du commercial du dossier et, si le mandat est partagé, la
+    rétrocommission (l'autre commercial + son rôle, forcément complémentaire).
+    Retourne (role_commercial, retro_commercial_id, retro_role, erreur) — erreur est
+    None si tout est valide, sinon un tuple (réponse jsonify, code) à retourner tel quel."""
+    role_commercial = data.get("role_commercial", "les_deux")
+    if role_commercial not in ("les_deux", "entrant", "sortant"):
+        return None, None, None, (jsonify(error="Rôle invalide"), 400)
+
+    if role_commercial == "les_deux":
+        return role_commercial, None, None, None
+
+    retro = data.get("retrocommission") or {}
+    retro_commercial_id = retro.get("commercial_id")
+    retro_role = retro.get("role")
+    role_oppose = "sortant" if role_commercial == "entrant" else "entrant"
+
+    if not retro_commercial_id:
+        return None, None, None, (jsonify(error="Rétrocommission : commercial requis"), 400)
+    if retro_role != role_oppose:
+        return None, None, None, (jsonify(error="Rôle de rétrocommission incohérent"), 400)
+    if int(retro_commercial_id) == int(commercial_id):
+        return None, None, None, (jsonify(error="La rétrocommission doit concerner un autre commercial"), 400)
+    if not db.execute("SELECT 1 FROM commerciaux WHERE id = ?", (retro_commercial_id,)).fetchone():
+        return None, None, None, (jsonify(error="Commercial de rétrocommission inconnu"), 400)
+
+    return role_commercial, retro_commercial_id, retro_role, None
+
+
+def sauvegarder_retrocommission(db, dossier_id, retro_commercial_id, retro_role):
+    """Remplace la rétrocommission éventuelle d'un dossier (au plus une par dossier)."""
+    db.execute("DELETE FROM retrocommissions WHERE dossier_id = ?", (dossier_id,))
+    if retro_commercial_id is not None:
+        db.execute(
+            "INSERT INTO retrocommissions (dossier_id, commercial_id, role) VALUES (?, ?, ?)",
+            (dossier_id, retro_commercial_id, retro_role),
+        )
 
 
 @app.post("/api/dossiers")
@@ -1091,10 +1389,14 @@ def create_dossier():
     if not db.execute("SELECT 1 FROM commerciaux WHERE id = ?", (commercial_id,)).fetchone():
         return jsonify(error="Commercial inconnu"), 400
 
+    role_commercial, retro_commercial_id, retro_role, erreur = parser_role_et_retrocommission(data, commercial_id, db)
+    if erreur:
+        return erreur
+
     cur = db.execute(
         """INSERT INTO dossiers
-           (commercial_id, date, client, voiture, plaque, garantie_achat, garantie_prix_vendu, mandat_total, frais_intermediation, nettoyage, commission_agence, achat_livraison, vente_livraison)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (commercial_id, date, client, voiture, plaque, garantie_achat, garantie_prix_vendu, mandat_total, frais_intermediation, nettoyage, commission_agence, achat_livraison, vente_livraison, role_commercial)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             commercial_id,
             data.get("date") or str(date.today()),
@@ -1109,8 +1411,10 @@ def create_dossier():
             commission_agence,
             float(data.get("achat_livraison") or 0),
             vente_livraison,
+            role_commercial,
         ),
     )
+    sauvegarder_retrocommission(db, cur.lastrowid, retro_commercial_id, retro_role)
     db.commit()
     row = db.execute("SELECT * FROM dossiers WHERE id = ?", (cur.lastrowid,)).fetchone()
     return jsonify(enrich(db, [row])[0]), 201
@@ -1120,7 +1424,7 @@ def load_dossier_for_user(db, dossier_id):
     row = db.execute("SELECT * FROM dossiers WHERE id = ?", (dossier_id,)).fetchone()
     if row is None:
         return None
-    if g.user["role"] != "admin" and row["commercial_id"] != g.user["commercial_id"]:
+    if not est_type_admin(g.user) and row["commercial_id"] != g.user["commercial_id"]:
         return None
     return row
 
@@ -1135,7 +1439,7 @@ def update_dossier(dossier_id):
 
     data = request.get_json(silent=True) or {}
     commercial_id = row["commercial_id"]
-    if g.user["role"] == "admin" and data.get("commercial_id"):
+    if est_type_admin(g.user) and data.get("commercial_id"):
         commercial_id = data["commercial_id"]
 
     frais_intermediation = float(data.get("frais_intermediation", row["frais_intermediation"]) or 0)
@@ -1144,10 +1448,15 @@ def update_dossier(dossier_id):
     vente_livraison = float(data.get("vente_livraison", row["vente_livraison"]) or 0)
     mandat_total = mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu, vente_livraison)
 
+    data.setdefault("role_commercial", row["role_commercial"])
+    role_commercial, retro_commercial_id, retro_role, erreur = parser_role_et_retrocommission(data, commercial_id, db)
+    if erreur:
+        return erreur
+
     db.execute(
         """UPDATE dossiers SET commercial_id = ?, date = ?, client = ?, voiture = ?, plaque = ?,
            garantie_achat = ?, garantie_prix_vendu = ?, mandat_total = ?, frais_intermediation = ?, nettoyage = ?,
-           commission_agence = ?, achat_livraison = ?, vente_livraison = ? WHERE id = ?""",
+           commission_agence = ?, achat_livraison = ?, vente_livraison = ?, role_commercial = ? WHERE id = ?""",
         (
             commercial_id,
             data.get("date", row["date"]),
@@ -1162,9 +1471,11 @@ def update_dossier(dossier_id):
             commission_agence,
             float(data.get("achat_livraison", row["achat_livraison"]) or 0),
             vente_livraison,
+            role_commercial,
             dossier_id,
         ),
     )
+    sauvegarder_retrocommission(db, dossier_id, retro_commercial_id, retro_role)
     db.commit()
     row = db.execute("SELECT * FROM dossiers WHERE id = ?", (dossier_id,)).fetchone()
     return jsonify(enrich(db, [row])[0])
@@ -1177,7 +1488,168 @@ def delete_dossier(dossier_id):
     row = load_dossier_for_user(db, dossier_id)
     if row is None:
         return jsonify(error="Dossier introuvable"), 404
+    db.execute("DELETE FROM retrocommissions WHERE dossier_id = ?", (dossier_id,))
     db.execute("DELETE FROM dossiers WHERE id = ?", (dossier_id,))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@app.get("/api/retrocommissions")
+@login_required
+def list_retrocommissions():
+    """Les lignes de rétrocommission créditées à l'utilisateur courant (ou à tout le
+    monde pour l'admin/animateur) : le dossier appartient à un AUTRE commercial, mais
+    celui-ci touche sa part (entrant ou sortant) — voir ANNEXE 8."""
+    db = get_db()
+    requete = """SELECT r.id, r.dossier_id, r.commercial_id, r.role,
+                        d.date, d.client, d.voiture, d.plaque,
+                        d.garantie_achat, d.garantie_prix_vendu, d.mandat_total, d.nettoyage, d.achat_livraison
+                 FROM retrocommissions r JOIN dossiers d ON d.id = r.dossier_id"""
+    if peut_tout_voir(g.user):
+        rows = db.execute(requete + " ORDER BY d.date DESC").fetchall()
+    else:
+        rows = db.execute(
+            requete + " WHERE r.commercial_id = ? ORDER BY d.date DESC", (g.user["commercial_id"],)
+        ).fetchall()
+
+    result = []
+    for row in rows:
+        com = db.execute("SELECT * FROM commerciaux WHERE id = ?", (row["commercial_id"],)).fetchone()
+        ent = db.execute("SELECT * FROM entreprises WHERE id = ?", (com["entreprise_id"],)).fetchone() if com else None
+        taux = taux_partage(db, row["commercial_id"], row["date"][:7], row["role"])
+        result.append(
+            {
+                "id": row["id"],
+                "dossier_id": row["dossier_id"],
+                "date": row["date"],
+                "client": row["client"],
+                "voiture": row["voiture"],
+                "plaque": row["plaque"],
+                "commercial_id": row["commercial_id"],
+                "commercial_nom": com["nom"] if com else "—",
+                "entreprise_id": ent["id"] if ent else None,
+                "entreprise_nom": ent["nom"] if ent else None,
+                "entreprise_couleur": ent["couleur"] if ent else None,
+                "role": row["role"],
+                "commission": total_ht_ligne(row) * taux,
+            }
+        )
+    return jsonify(result)
+
+
+# ---------- Routes: avis Google ----------
+#
+# Chaque avis est une fiche individuelle (nom de la personne, vendeur/acheteur — un
+# champ purement informatif, sans impact sur le calcul — rattachée à un dossier), pas
+# un simple compteur : le commercial concerné ou l'admin peut en ajouter un. Le mois
+# pris en compte pour le bonus est celui du dossier lié, jamais saisi à part.
+
+def dossiers_lies_au_commercial(db, commercial_id):
+    """Dossiers sur lesquels un avis peut être rattaché pour ce commercial : les siens
+    en propre, ou ceux d'un autre commercial où il est crédité via une rétrocommission."""
+    return db.execute(
+        """SELECT id FROM dossiers WHERE commercial_id = ?
+           UNION
+           SELECT dossier_id FROM retrocommissions WHERE commercial_id = ?""",
+        (commercial_id, commercial_id),
+    ).fetchall()
+
+
+def avis_dict(row):
+    return {
+        "id": row["id"],
+        "dossier_id": row["dossier_id"],
+        "commercial_id": row["commercial_id"],
+        "commercial_nom": row["commercial_nom"],
+        "entreprise_id": row["entreprise_id"],
+        "entreprise_nom": row["entreprise_nom"],
+        "entreprise_couleur": row["entreprise_couleur"],
+        "date": row["date"],
+        "client": row["client"],
+        "voiture": row["voiture"],
+        "nom_client": row["nom_client"],
+        "role": row["role"],
+        "cree_le": row["cree_le"],
+    }
+
+
+@app.get("/api/avis")
+@login_required
+def list_avis():
+    db = get_db()
+    requete = """SELECT a.id, a.dossier_id, a.commercial_id, a.nom_client, a.role, a.cree_le,
+                        c.nom AS commercial_nom, e.id AS entreprise_id, e.nom AS entreprise_nom,
+                        e.couleur AS entreprise_couleur, d.date, d.client, d.voiture
+                 FROM avis_google a
+                 JOIN commerciaux c ON c.id = a.commercial_id
+                 JOIN entreprises e ON e.id = c.entreprise_id
+                 JOIN dossiers d ON d.id = a.dossier_id"""
+    if peut_tout_voir(g.user):
+        rows = db.execute(requete + " ORDER BY d.date DESC, a.id DESC").fetchall()
+    else:
+        rows = db.execute(
+            requete + " WHERE a.commercial_id = ? ORDER BY d.date DESC, a.id DESC",
+            (g.user["commercial_id"],),
+        ).fetchall()
+    return jsonify([avis_dict(r) for r in rows])
+
+
+@app.post("/api/avis")
+@ecriture_requise
+def create_avis():
+    data = request.get_json(silent=True) or {}
+    db = get_db()
+
+    commercial_id, err = resolve_commercial_id(data)
+    if err:
+        return err
+    if not db.execute("SELECT 1 FROM commerciaux WHERE id = ?", (commercial_id,)).fetchone():
+        return jsonify(error="Commercial inconnu"), 400
+
+    dossier_id = data.get("dossier_id")
+    nom_client = (data.get("nom_client") or "").strip()
+    role = data.get("role")
+
+    if not dossier_id or not nom_client or role not in ("vendeur", "acheteur"):
+        return jsonify(error="Dossier, nom et rôle (vendeur/acheteur) sont requis"), 400
+
+    dossiers_valides = {r["id"] for r in dossiers_lies_au_commercial(db, commercial_id)}
+    if int(dossier_id) not in dossiers_valides:
+        return jsonify(error="Ce dossier n'est pas rattaché à ce commercial"), 400
+
+    try:
+        cur = db.execute(
+            "INSERT INTO avis_google (dossier_id, commercial_id, nom_client, role, cree_le) VALUES (?, ?, ?, ?, ?)",
+            (dossier_id, commercial_id, nom_client, role, datetime.utcnow().isoformat()),
+        )
+    except sqlite3.IntegrityError:
+        return jsonify(error="Un avis existe déjà pour ce rôle sur ce dossier"), 400
+    db.commit()
+
+    row = db.execute(
+        """SELECT a.id, a.dossier_id, a.commercial_id, a.nom_client, a.role, a.cree_le,
+                  c.nom AS commercial_nom, e.id AS entreprise_id, e.nom AS entreprise_nom,
+                  e.couleur AS entreprise_couleur, d.date, d.client, d.voiture
+           FROM avis_google a
+           JOIN commerciaux c ON c.id = a.commercial_id
+           JOIN entreprises e ON e.id = c.entreprise_id
+           JOIN dossiers d ON d.id = a.dossier_id
+           WHERE a.id = ?""",
+        (cur.lastrowid,),
+    ).fetchone()
+    return jsonify(avis_dict(row)), 201
+
+
+@app.delete("/api/avis/<int:avis_id>")
+@ecriture_requise
+def delete_avis(avis_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM avis_google WHERE id = ?", (avis_id,)).fetchone()
+    if row is None:
+        return jsonify(error="Avis introuvable"), 404
+    if not est_type_admin(g.user) and row["commercial_id"] != g.user["commercial_id"]:
+        return jsonify(error="Avis introuvable"), 404
+    db.execute("DELETE FROM avis_google WHERE id = ?", (avis_id,))
     db.commit()
     return jsonify(ok=True)
 
@@ -1216,7 +1688,7 @@ def get_refacturation():
     tarifs = get_tarifs_refacturation(db)
 
     if peut_tout_voir(g.user):
-        commerciaux_rows = db.execute("SELECT * FROM commerciaux ORDER BY nom").fetchall()
+        commerciaux_rows = db.execute("SELECT * FROM commerciaux WHERE supprime = 0 ORDER BY nom").fetchall()
     else:
         commerciaux_rows = db.execute(
             "SELECT * FROM commerciaux WHERE id = ?", (g.user["commercial_id"],)
@@ -1244,7 +1716,7 @@ def update_refacturation_nombre():
     if categorie not in ("call_center", "leads_meta"):
         return jsonify(error="Catégorie invalide"), 400
 
-    if g.user["role"] == "admin":
+    if est_type_admin(g.user):
         commercial_id = data.get("commercial_id")
         if not commercial_id:
             return jsonify(error="commercial_id requis"), 400
@@ -1300,7 +1772,7 @@ def update_refacturation_leboncoin():
 
 
 @app.put("/api/refacturation/tarifs")
-@admin_required
+@admin_complet_requis
 def update_refacturation_tarif():
     data = request.get_json(silent=True) or {}
     categorie = data.get("categorie")
@@ -1323,49 +1795,78 @@ def update_refacturation_tarif():
 
 # ---------- Routes: charges fixes (admin uniquement) ----------
 #
-# Liste libre de postes de charges (nom + montant), sans notion de mois : une fois
-# créée, une charge reste valable tant qu'elle n'est pas modifiée ou supprimée à la
-# main. Contrairement à la refacturation, ce n'est pas un compteur mensuel.
+# Liste de postes de charges (nom + montant), propre à chaque entreprise et remise à
+# zéro chaque mois : une charge n'existe que pour le mois où elle a été créée, et ne
+# peut être créée que dans le mois courant. Les mois passés restent consultables (comme
+# le CA) mais ne sont plus modifiables, pour garder un historique fiable.
 
 
-def charge_fixe_dict(row):
-    return {"id": row["id"], "nom": row["nom"], "montant": row["montant"]}
+def mois_courant_str():
+    return datetime.utcnow().strftime("%Y-%m")
+
+
+def charge_fixe_dict(row, ent):
+    return {
+        "id": row["id"],
+        "entreprise_id": row["entreprise_id"],
+        "entreprise_nom": ent["nom"] if ent else None,
+        "entreprise_couleur": ent["couleur"] if ent else None,
+        "mois": row["mois"],
+        "nom": row["nom"],
+        "montant": row["montant"],
+    }
+
+
+def enrichir_charge_fixe(db, row):
+    ent = db.execute("SELECT * FROM entreprises WHERE id = ?", (row["entreprise_id"],)).fetchone()
+    return charge_fixe_dict(row, ent)
 
 
 @app.get("/api/charges-fixes")
 @admin_required
 def list_charges_fixes():
     db = get_db()
-    rows = db.execute("SELECT * FROM charges_fixes ORDER BY id").fetchall()
-    return jsonify([charge_fixe_dict(r) for r in rows])
+    rows = db.execute("SELECT * FROM charges_fixes ORDER BY mois DESC, id").fetchall()
+    return jsonify([enrichir_charge_fixe(db, r) for r in rows])
 
 
 @app.post("/api/charges-fixes")
-@admin_required
+@admin_complet_requis
 def create_charge_fixe():
     data = request.get_json(silent=True) or {}
     nom = (data.get("nom") or "").strip()
+    entreprise_id = data.get("entreprise_id")
     try:
         montant = float(data.get("montant") or 0)
     except (TypeError, ValueError):
         return jsonify(error="Montant invalide"), 400
     if not nom or montant <= 0:
         return jsonify(error="Nom et montant (>0) sont requis"), 400
+    if not entreprise_id:
+        return jsonify(error="Entreprise requise"), 400
 
     db = get_db()
-    cur = db.execute("INSERT INTO charges_fixes (nom, montant) VALUES (?, ?)", (nom, montant))
+    if not db.execute("SELECT 1 FROM entreprises WHERE id = ?", (entreprise_id,)).fetchone():
+        return jsonify(error="Entreprise inconnue"), 400
+
+    cur = db.execute(
+        "INSERT INTO charges_fixes (entreprise_id, mois, nom, montant) VALUES (?, ?, ?, ?)",
+        (entreprise_id, mois_courant_str(), nom, montant),
+    )
     db.commit()
     row = db.execute("SELECT * FROM charges_fixes WHERE id = ?", (cur.lastrowid,)).fetchone()
-    return jsonify(charge_fixe_dict(row)), 201
+    return jsonify(enrichir_charge_fixe(db, row)), 201
 
 
 @app.put("/api/charges-fixes/<int:charge_id>")
-@admin_required
+@admin_complet_requis
 def update_charge_fixe(charge_id):
     db = get_db()
     row = db.execute("SELECT * FROM charges_fixes WHERE id = ?", (charge_id,)).fetchone()
     if row is None:
         return jsonify(error="Charge introuvable"), 404
+    if row["mois"] != mois_courant_str():
+        return jsonify(error="Seules les charges du mois en cours peuvent être modifiées"), 400
 
     data = request.get_json(silent=True) or {}
     nom = (data.get("nom", row["nom"]) or "").strip()
@@ -1379,15 +1880,18 @@ def update_charge_fixe(charge_id):
     db.execute("UPDATE charges_fixes SET nom = ?, montant = ? WHERE id = ?", (nom, montant, charge_id))
     db.commit()
     row = db.execute("SELECT * FROM charges_fixes WHERE id = ?", (charge_id,)).fetchone()
-    return jsonify(charge_fixe_dict(row))
+    return jsonify(enrichir_charge_fixe(db, row))
 
 
 @app.delete("/api/charges-fixes/<int:charge_id>")
-@admin_required
+@admin_complet_requis
 def delete_charge_fixe(charge_id):
     db = get_db()
-    if not db.execute("SELECT 1 FROM charges_fixes WHERE id = ?", (charge_id,)).fetchone():
+    row = db.execute("SELECT * FROM charges_fixes WHERE id = ?", (charge_id,)).fetchone()
+    if row is None:
         return jsonify(error="Charge introuvable"), 404
+    if row["mois"] != mois_courant_str():
+        return jsonify(error="Seules les charges du mois en cours peuvent être supprimées"), 400
     db.execute("DELETE FROM charges_fixes WHERE id = ?", (charge_id,))
     db.commit()
     return jsonify(ok=True)

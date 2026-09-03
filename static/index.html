@@ -78,6 +78,8 @@ export default function App() {
   const [dossiersTous, setDossiersTous] = useState([]);
   const [refacturation, setRefacturation] = useState(null);
   const [chargesFixes, setChargesFixes] = useState([]);
+  const [retrocommissions, setRetrocommissions] = useState([]);
+  const [avis, setAvis] = useState([]);
   const [entrepriseFiltre, setEntrepriseFiltre] = useState("toutes");
   const [commercialFiltre, setCommercialFiltre] = useState("tous");
   const [anneeFiltre, setAnneeFiltre] = useState("toutes");
@@ -93,7 +95,11 @@ export default function App() {
   const [actualisation, setActualisation] = useState(false);
   const [exportEnCours, setExportEnCours] = useState(false);
 
-  const estAdmin = utilisateur?.role === "admin";
+  // L'admin secondaire a les mêmes accès que l'admin, sauf les tarifs de
+  // refacturation et les charges fixes (voir estAdminPrincipal, réservé à ces
+  // deux points précis).
+  const estAdmin = utilisateur?.role === "admin" || utilisateur?.role === "admin_secondaire";
+  const estAdminPrincipal = utilisateur?.role === "admin";
   const estAnimateur = utilisateur?.role === "animateur";
   const peutToutVoir = estAdmin || estAnimateur;
 
@@ -180,13 +186,23 @@ export default function App() {
     setChargesFixes(rows);
   }, []);
 
+  const chargerRetrocommissions = useCallback(async () => {
+    const rows = await api("/api/retrocommissions");
+    setRetrocommissions(rows);
+  }, []);
+
+  const chargerAvis = useCallback(async () => {
+    const rows = await api("/api/avis");
+    setAvis(rows);
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
         const me = await api("/api/me");
         setUtilisateur(me);
-        const chargeurs = [chargerReferentiels(), chargerDossiers("toutes"), chargerDossiersTous(), chargerRefacturation()];
-        if (me.role === "admin") chargeurs.push(chargerChargesFixes());
+        const chargeurs = [chargerReferentiels(), chargerDossiers("toutes"), chargerDossiersTous(), chargerRefacturation(), chargerRetrocommissions(), chargerAvis()];
+        if (me.role === "admin" || me.role === "admin_secondaire") chargeurs.push(chargerChargesFixes());
         await Promise.all(chargeurs);
       } catch {
         setUtilisateur(null);
@@ -194,7 +210,7 @@ export default function App() {
         setChargement(false);
       }
     })();
-  }, [chargerReferentiels, chargerDossiers, chargerDossiersTous, chargerRefacturation, chargerChargesFixes]);
+  }, [chargerReferentiels, chargerDossiers, chargerDossiersTous, chargerRefacturation, chargerChargesFixes, chargerRetrocommissions, chargerAvis]);
 
   useEffect(() => {
     if (utilisateur) chargerDossiers(entrepriseFiltre);
@@ -204,8 +220,8 @@ export default function App() {
     setUtilisateur(me);
     setChargement(true);
     try {
-      const chargeurs = [chargerReferentiels(), chargerDossiers("toutes"), chargerDossiersTous(), chargerRefacturation()];
-      if (me.role === "admin") chargeurs.push(chargerChargesFixes());
+      const chargeurs = [chargerReferentiels(), chargerDossiers("toutes"), chargerDossiersTous(), chargerRefacturation(), chargerRetrocommissions(), chargerAvis()];
+      if (me.role === "admin" || me.role === "admin_secondaire") chargeurs.push(chargerChargesFixes());
       await Promise.all(chargeurs);
     } finally {
       setChargement(false);
@@ -221,11 +237,13 @@ export default function App() {
     setDossiersTous([]);
     setRefacturation(null);
     setChargesFixes([]);
+    setRetrocommissions([]);
+    setAvis([]);
     setVue("dossiers");
   };
 
   const rafraichir = async () => {
-    const chargeurs = [chargerReferentiels(), chargerDossiers(entrepriseFiltre), chargerDossiersTous(), chargerRefacturation()];
+    const chargeurs = [chargerReferentiels(), chargerDossiers(entrepriseFiltre), chargerDossiersTous(), chargerRefacturation(), chargerRetrocommissions(), chargerAvis()];
     if (estAdmin) chargeurs.push(chargerChargesFixes());
     await Promise.all(chargeurs);
   };
@@ -278,9 +296,36 @@ export default function App() {
     })
     .reduce((s, l) => s + l.total, 0);
 
-  // Charges fixes : pas de notion d'entreprise ni de commercial, ni de mois — une somme
-  // globale unique, valable pour l'ensemble tant qu'un poste n'est pas modifié/supprimé.
-  const chargesFixesTotal = chargesFixes.reduce((s, c) => s + c.montant, 0);
+  // Charges fixes : propres à chaque entreprise et remises à zéro chaque mois — même
+  // filtre entreprise/année/mois que les dossiers (le mois courant par défaut, mais
+  // consultable sur les mois passés comme le CA).
+  const chargesFixesAffichees = chargesFixes.filter((c) => {
+    if (entrepriseFiltre !== "toutes" && String(c.entreprise_id) !== String(entrepriseFiltre)) return false;
+    if (anneeFiltre !== "toutes" && c.mois.slice(0, 4) !== anneeFiltre) return false;
+    if (moisFiltre !== "tous" && c.mois.slice(5, 7) !== moisFiltre) return false;
+    return true;
+  });
+  const chargesFixesTotal = chargesFixesAffichees.reduce((s, c) => s + c.montant, 0);
+
+  // Rétrocommissions reçues (ANNEXE 8) : même filtre que dossiersAffiches, sur le
+  // commercial crédité et son entreprise (pas celle du dossier d'origine).
+  const retrocommissionsAffichees = retrocommissions.filter((r) => {
+    if (commercialFiltre !== "tous" && String(r.commercial_id) !== commercialFiltre) return false;
+    if (entrepriseFiltre !== "toutes" && String(r.entreprise_id) !== String(entrepriseFiltre)) return false;
+    if (anneeFiltre !== "toutes" && r.date.slice(0, 4) !== anneeFiltre) return false;
+    if (moisFiltre !== "tous" && r.date.slice(5, 7) !== moisFiltre) return false;
+    return true;
+  });
+  const retrocommissionsTotal = retrocommissionsAffichees.reduce((s, r) => s + r.commission, 0);
+
+  // Avis Google : même filtre que dossiersAffiches, sur la date du dossier lié.
+  const avisAffiches = avis.filter((a) => {
+    if (commercialFiltre !== "tous" && String(a.commercial_id) !== commercialFiltre) return false;
+    if (entrepriseFiltre !== "toutes" && String(a.entreprise_id) !== String(entrepriseFiltre)) return false;
+    if (anneeFiltre !== "toutes" && a.date.slice(0, 4) !== anneeFiltre) return false;
+    if (moisFiltre !== "tous" && a.date.slice(5, 7) !== moisFiltre) return false;
+    return true;
+  });
 
   // Le KPI d'atteinte d'objectif n'a de sens que pour un seul commercial à la fois :
   // soit c'est le compte connecté, soit l'admin/animateur a filtré sur une personne précise.
@@ -340,6 +385,12 @@ export default function App() {
           >
             Refacturation
           </button>
+          <button
+            style={{ ...styles.onglet, ...(vue === "avis" ? styles.ongletActif : {}) }}
+            onClick={() => setVue("avis")}
+          >
+            Avis Google
+          </button>
           {peutToutVoir && (
             <button
               style={{ ...styles.onglet, ...(vue === "equipe" ? styles.ongletActif : {}) }}
@@ -394,6 +445,7 @@ export default function App() {
               entrepriseCible={entrepriseCible}
               objectifGlobalEntreprises={objectifGlobalEntreprises}
               refacturationTotal={refacturationTotal}
+              retrocommissionsTotal={retrocommissionsTotal}
               estAdminStrict={estAdmin}
               chargesFixesTotal={chargesFixesTotal}
               kpiReduits={kpiReduits}
@@ -461,16 +513,59 @@ export default function App() {
                 }
               }}
             />
+
+            {retrocommissionsAffichees.length > 0 && (
+              <TableauRetrocommissions dossiers={retrocommissionsAffichees} estAdmin={peutToutVoir} />
+            )}
           </>
         )}
 
         {vue === "refacturation" && (
           <Refacturation
             estAdmin={estAdmin}
+            estAdminPrincipal={estAdminPrincipal}
             estAnimateur={estAnimateur}
             donnees={refacturation}
             onRafraichir={chargerRefacturation}
           />
+        )}
+
+        {vue === "avis" && (
+          <>
+            {peutToutVoir && (
+              <FiltreEntreprises
+                entreprises={entreprises}
+                entrepriseFiltre={entrepriseFiltre}
+                setEntrepriseFiltre={setEntrepriseFiltre}
+              />
+            )}
+            {peutToutVoir && (
+              <FiltreCommercial
+                commerciaux={commerciaux}
+                commercialFiltre={commercialFiltre}
+                setCommercialFiltre={setCommercialFiltre}
+              />
+            )}
+            <FiltrePeriode
+              anneesDisponibles={anneesDisponibles}
+              anneeFiltre={anneeFiltre}
+              setAnneeFiltre={setAnneeFiltre}
+              moisFiltre={moisFiltre}
+              setMoisFiltre={setMoisFiltre}
+            />
+            <AvisGoogle
+              donnees={avisAffiches}
+              peutModifier={!estAnimateur}
+              peutToutVoir={peutToutVoir}
+              estAdmin={estAdmin}
+              commerciaux={commerciaux}
+              dossiersTous={dossiersTous}
+              retrocommissions={retrocommissions}
+              utilisateur={utilisateur}
+              onRafraichir={rafraichir}
+              onErreur={setErreur}
+            />
+          </>
         )}
 
         {vue === "equipe" && peutToutVoir && (
@@ -482,11 +577,43 @@ export default function App() {
             onModifierEntreprise={(e) => setModalEntreprise(e)}
             onNouveauCommercial={() => setModalCommercial({})}
             onModifierCommercial={(c) => setModalCommercial(c)}
+            onSupprimerCommercial={async (c) => {
+              if (!confirm(`Supprimer la fiche de ${c.nom} ? L'historique de ses dossiers (ventes passées) sera conservé.`)) return;
+              try {
+                await api(`/api/commerciaux/${c.id}`, { method: "DELETE" });
+                await chargerReferentiels();
+              } catch (e) {
+                setErreur(e.message);
+              }
+            }}
           />
         )}
 
         {vue === "charges" && estAdmin && (
-          <ChargesFixes donnees={chargesFixes} onRafraichir={chargerChargesFixes} onErreur={setErreur} />
+          <>
+            <FiltreEntreprises
+              entreprises={entreprises}
+              entrepriseFiltre={entrepriseFiltre}
+              setEntrepriseFiltre={setEntrepriseFiltre}
+            />
+
+            <FiltrePeriode
+              anneesDisponibles={anneesDisponibles}
+              anneeFiltre={anneeFiltre}
+              setAnneeFiltre={setAnneeFiltre}
+              moisFiltre={moisFiltre}
+              setMoisFiltre={setMoisFiltre}
+            />
+
+            <ChargesFixes
+              donnees={chargesFixesAffichees}
+              entreprises={entreprises}
+              entrepriseFiltre={entrepriseFiltre}
+              onRafraichir={chargerChargesFixes}
+              onErreur={setErreur}
+              peutModifier={estAdminPrincipal}
+            />
+          </>
         )}
       </div>
 
@@ -1136,7 +1263,17 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
                   {d.plaque}
                 </div>
               </td>
-              {estAdmin && <td style={styles.td}>{d.commercial_nom}</td>}
+              {estAdmin && (
+                <td style={styles.td}>
+                  <div>{d.commercial_nom}</div>
+                  {d.role_commercial !== "les_deux" && (
+                    <div style={{ fontSize: 11.5, color: "#8B93A1" }}>
+                      {d.role_commercial === "entrant" ? "Entrant" : "Sortant"}
+                      {d.retrocommission && ` · +${d.retrocommission.commercial_nom} (${d.retrocommission.role === "entrant" ? "Entrant" : "Sortant"})`}
+                    </div>
+                  )}
+                </td>
+              )}
               {estAdmin && (
                 <td style={styles.td}>
                   <span style={styles.puceEntreprise}>
@@ -1185,6 +1322,54 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
   );
 }
 
+// ---------- Rétrocommissions reçues (ANNEXE 8) ----------
+//
+// Dossiers appartenant à un AUTRE commercial, mais dont celui-ci touche une part
+// (entrant ou sortant) — un dossier "chez soi" côté commission, sans en être le
+// titulaire. Table séparée du tableau des ventes pour ne jamais compter deux fois
+// le même dossier dans le CA/nombre de voitures vendues de l'entreprise.
+
+function TableauRetrocommissions({ dossiers, estAdmin }) {
+  return (
+    <div style={{ marginTop: 24 }}>
+      <h2 style={{ ...styles.sectionTitre, marginBottom: 12 }}>Rétrocommissions reçues</h2>
+      <div style={styles.tableauConteneur}>
+        <table style={{ ...styles.tableau, minWidth: "auto" }}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Date</th>
+              <th style={styles.th}>Client</th>
+              <th style={styles.th}>Véhicule</th>
+              {estAdmin && <th style={styles.th}>Commercial</th>}
+              <th style={styles.th}>Rôle</th>
+              <th style={{ ...styles.th, textAlign: "right" }}>Commission</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dossiers.map((r) => (
+              <tr key={r.id} style={styles.tr}>
+                <td style={styles.td}>{new Date(r.date).toLocaleDateString("fr-FR")}</td>
+                <td style={styles.td}>{r.client}</td>
+                <td style={styles.td}>
+                  <div>{r.voiture}</div>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "#8B93A1" }}>
+                    {r.plaque}
+                  </div>
+                </td>
+                {estAdmin && <td style={styles.td}>{r.commercial_nom}</td>}
+                <td style={styles.td}>{r.role === "entrant" ? "Entrant" : "Sortant"}</td>
+                <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#4FD1C5" }}>
+                  {fmtEUR(r.commission)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Modale dossier (création / édition) ----------
 
 function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, onValider }) {
@@ -1204,6 +1389,22 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
   const [venteLivraison, setVenteLivraison] = useState(dossier.vente_livraison ?? "");
   const [date, setDate] = useState(dossier.date || new Date().toISOString().slice(0, 10));
 
+  // Rétrocommission : le commercial du dossier n'a fait que l'entrée OU que la sortie
+  // du mandat, l'autre partie revient à un second commercial (ANNEXE 8).
+  const [retrocommissionActive, setRetrocommissionActive] = useState(
+    Boolean(dossier.role_commercial && dossier.role_commercial !== "les_deux")
+  );
+  const [retrocommissionCommercialId, setRetrocommissionCommercialId] = useState(
+    dossier.retrocommission?.commercial_id ?? ""
+  );
+  const [retrocommissionRole, setRetrocommissionRole] = useState(dossier.retrocommission?.role || "sortant");
+
+  const roleCommercialPrincipal = !retrocommissionActive
+    ? "les_deux"
+    : retrocommissionRole === "sortant" ? "entrant" : "sortant";
+
+  const autresCommerciaux = commerciaux.filter((c) => c.id !== commercialId);
+
   // Mandat total n'est plus saisi : il se déduit de ces montants.
   const mandatTotal =
     (Number(commissionAgence) || 0) +
@@ -1211,7 +1412,11 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
     (Number(garantiePrixVendu) || 0) +
     (Number(venteLivraison) || 0);
 
-  const valide = client.trim() !== "" && voiture.trim() !== "" && mandatTotal > 0;
+  const valide =
+    client.trim() !== "" &&
+    voiture.trim() !== "" &&
+    mandatTotal > 0 &&
+    (!retrocommissionActive || Boolean(retrocommissionCommercialId));
 
   return (
     <div style={styles.modalFond} onClick={onFermer}>
@@ -1294,7 +1499,7 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
         <div style={styles.tcaApercu}>
           <span>TCA (18%)</span>
           <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#C58AF0", fontWeight: 600 }}>
-            {fmtEUR(Math.max(0, (Number(garantiePrixVendu) || 0) - (Number(garantieAchat) || 0)) * 0.18)}
+            {fmtEUR((Math.max(0, (Number(garantiePrixVendu) || 0) - (Number(garantieAchat) || 0)) * 18) / 118)}
           </span>
         </div>
 
@@ -1342,6 +1547,58 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
         </div>
         <div style={styles.tauxAutoAide}>Calculé automatiquement : commission d'agence + frais d'intermédiation + garantie prix vendu + vente livraison</div>
 
+        {estAdmin && (
+          <>
+            <label style={styles.champLabel}>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={retrocommissionActive}
+                  onChange={(e) => setRetrocommissionActive(e.target.checked)}
+                />
+                Rétrocommission
+              </span>
+            </label>
+            <div style={styles.tauxAutoAide}>
+              À cocher si le commercial du dossier n'a fait que l'entrée ou que la sortie du mandat — l'autre partie revient alors à un second commercial.
+            </div>
+
+            {retrocommissionActive && (
+              <>
+                <label style={styles.champLabel}>
+                  Commercial concerné par la rétrocommission
+                  <select
+                    value={retrocommissionCommercialId}
+                    onChange={(e) => setRetrocommissionCommercialId(Number(e.target.value))}
+                    style={styles.select}
+                  >
+                    <option value="">Choisir un commercial</option>
+                    {autresCommerciaux.map((c) => (
+                      <option key={c.id} value={c.id}>{c.nom}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label style={styles.champLabel}>
+                  Partie concernée par ce commercial
+                  <select
+                    value={retrocommissionRole}
+                    onChange={(e) => setRetrocommissionRole(e.target.value)}
+                    style={styles.select}
+                  >
+                    <option value="sortant">Sortant (sortie de mandat)</option>
+                    <option value="entrant">Entrant (entrée de mandat)</option>
+                  </select>
+                </label>
+
+                <div style={styles.tauxAutoAide}>
+                  {commerciaux.find((c) => c.id === commercialId)?.nom || "Le commercial du dossier"} sera donc crédité sur la {roleCommercialPrincipal === "entrant" ? "entrée" : "sortie"} de mandat.
+                </div>
+              </>
+            )}
+          </>
+        )}
+
         <button
           style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}
           disabled={!valide}
@@ -1362,6 +1619,10 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
               achat_livraison: Number(achatLivraison) || 0,
               vente_livraison: Number(venteLivraison) || 0,
               date,
+              role_commercial: roleCommercialPrincipal,
+              retrocommission: retrocommissionActive
+                ? { commercial_id: retrocommissionCommercialId, role: retrocommissionRole }
+                : null,
             })
           }
         >
@@ -1380,7 +1641,7 @@ const CATEGORIES_REFACTURATION = [
   { id: "leboncoin", label: "Leboncoin" },
 ];
 
-function Refacturation({ estAdmin, estAnimateur, donnees, onRafraichir }) {
+function Refacturation({ estAdmin, estAdminPrincipal, estAnimateur, donnees, onRafraichir }) {
   const [categorie, setCategorie] = useState("call_center");
   const [erreur, setErreur] = useState("");
 
@@ -1453,7 +1714,7 @@ function Refacturation({ estAdmin, estAnimateur, donnees, onRafraichir }) {
         <TableauRefacturationCompteur
           categorie={categorie}
           donnees={donnees}
-          estAdmin={estAdmin}
+          estAdminPrincipal={estAdminPrincipal}
           peutSaisirNombre={peutSaisirNombre}
           onEnregistrerNombre={enregistrerNombre}
           onEnregistrerTarif={enregistrerTarif}
@@ -1494,14 +1755,14 @@ function ChampMontantDiffere({ valeurInitiale, onValider, disabled, placeholder 
   );
 }
 
-function TableauRefacturationCompteur({ categorie, donnees, estAdmin, peutSaisirNombre, onEnregistrerNombre, onEnregistrerTarif }) {
+function TableauRefacturationCompteur({ categorie, donnees, estAdminPrincipal, peutSaisirNombre, onEnregistrerNombre, onEnregistrerTarif }) {
   const cleNombre = categorie === "call_center" ? "nombre_call_center" : "nombre_leads_meta";
   const cleMontant = categorie === "call_center" ? "montant_call_center" : "montant_leads_meta";
   const prixUnitaire = donnees.tarifs[categorie] || 0;
 
   return (
     <div>
-      {estAdmin && (
+      {estAdminPrincipal && (
         <div style={{ ...styles.tcaApercu, marginBottom: 16, maxWidth: 320 }}>
           <span>Prix unitaire (€)</span>
           <ChampMontantDiffere
@@ -1510,7 +1771,7 @@ function TableauRefacturationCompteur({ categorie, donnees, estAdmin, peutSaisir
           />
         </div>
       )}
-      {!estAdmin && (
+      {!estAdminPrincipal && (
         <div style={styles.tauxAutoAide}>Prix unitaire fixé par l'admin : {fmtEUR(prixUnitaire)}</div>
       )}
 
@@ -1580,9 +1841,19 @@ function TableauRefacturationLeboncoin({ donnees, estAdmin, onEnregistrerLebonco
 
 // ---------- Charges fixes (admin uniquement) ----------
 
-function ChargesFixes({ donnees, onRafraichir, onErreur }) {
+function moisCourantStr() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+function libelleMois(mois) {
+  return new Date(`${mois}-01`).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+}
+
+function ChargesFixes({ donnees, entreprises, entrepriseFiltre, onRafraichir, onErreur, peutModifier }) {
   const [modal, setModal] = useState(null); // null | {} | charge existante
   const total = donnees.reduce((s, c) => s + c.montant, 0);
+  const moisCourant = moisCourantStr();
+  const afficherEntreprise = entrepriseFiltre === "toutes";
 
   const supprimer = async (c) => {
     if (!confirm(`Supprimer la charge "${c.nom}" ?`)) return;
@@ -1598,42 +1869,67 @@ function ChargesFixes({ donnees, onRafraichir, onErreur }) {
     <div>
       <div style={styles.sectionHeader}>
         <h2 style={styles.sectionTitre}>Charges fixes</h2>
-        <button style={styles.boutonAjout} onClick={() => setModal({})}>
-          <Plus size={16} strokeWidth={2.5} /> Nouvelle charge
-        </button>
+        {peutModifier && (
+          <button style={styles.boutonAjout} onClick={() => setModal({})}>
+            <Plus size={16} strokeWidth={2.5} /> Nouvelle charge
+          </button>
+        )}
+      </div>
+      <div style={styles.tauxAutoAide}>
+        Remises à zéro chaque mois et propres à chaque entreprise — les mois passés restent consultables mais ne
+        sont plus modifiables. {!peutModifier && "Lecture seule — réservé à l'administrateur principal."}
       </div>
 
       {donnees.length === 0 ? (
-        <div style={styles.videEtat}>Aucune charge fixe pour l'instant.</div>
+        <div style={styles.videEtat}>Aucune charge fixe pour ce filtre.</div>
       ) : (
         <div style={styles.tableauConteneur}>
           <table style={{ ...styles.tableau, minWidth: "auto" }}>
             <thead>
               <tr>
+                {afficherEntreprise && <th style={styles.th}>Entreprise</th>}
+                <th style={styles.th}>Mois</th>
                 <th style={styles.th}>Nom</th>
                 <th style={{ ...styles.th, textAlign: "right" }}>Montant (€)</th>
                 <th style={styles.th}></th>
               </tr>
             </thead>
             <tbody>
-              {donnees.map((c) => (
-                <tr key={c.id} style={styles.tr}>
-                  <td style={styles.td}>{c.nom}</td>
-                  <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(c.montant)}</td>
-                  <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
-                    <button style={styles.boutonIcone} onClick={() => setModal(c)} title="Modifier">
-                      <Pencil size={14} />
-                    </button>
-                    <button style={styles.boutonIcone} onClick={() => supprimer(c)} title="Supprimer">
-                      <Trash2 size={14} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {donnees.map((c) => {
+                const modifiable = peutModifier && c.mois === moisCourant;
+                return (
+                  <tr key={c.id} style={styles.tr}>
+                    {afficherEntreprise && (
+                      <td style={styles.td}>
+                        <span style={styles.puceEntreprise}>
+                          <span style={{ ...styles.puceCouleur, background: c.entreprise_couleur }} />
+                          {c.entreprise_nom}
+                        </span>
+                      </td>
+                    )}
+                    <td style={styles.td}>{libelleMois(c.mois)}</td>
+                    <td style={styles.td}>{c.nom}</td>
+                    <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(c.montant)}</td>
+                    <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
+                      {modifiable && (
+                        <>
+                          <button style={styles.boutonIcone} onClick={() => setModal(c)} title="Modifier">
+                            <Pencil size={14} />
+                          </button>
+                          <button style={styles.boutonIcone} onClick={() => supprimer(c)} title="Supprimer">
+                            <Trash2 size={14} />
+                          </button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
             <tfoot>
               <tr>
-                <td style={{ ...styles.td, fontWeight: 600 }}>Total</td>
+                {afficherEntreprise && <td style={styles.td}></td>}
+                <td style={{ ...styles.td, fontWeight: 600 }} colSpan={2}>Total</td>
                 <td style={{ ...styles.td, ...styles.mono, textAlign: "right", fontWeight: 600 }}>{fmtEUR(total)}</td>
                 <td style={styles.td}></td>
               </tr>
@@ -1645,6 +1941,8 @@ function ChargesFixes({ donnees, onRafraichir, onErreur }) {
       {modal && (
         <ModalChargeFixe
           charge={modal}
+          entreprises={entreprises}
+          entrepriseIdParDefaut={entrepriseFiltre !== "toutes" ? Number(entrepriseFiltre) : null}
           onFermer={() => setModal(null)}
           onValider={async (payload) => {
             try {
@@ -1665,12 +1963,15 @@ function ChargesFixes({ donnees, onRafraichir, onErreur }) {
   );
 }
 
-function ModalChargeFixe({ charge, onFermer, onValider }) {
+function ModalChargeFixe({ charge, entreprises, entrepriseIdParDefaut, onFermer, onValider }) {
   const estEdition = Boolean(charge.id);
   const [nom, setNom] = useState(charge.nom || "");
   const [montant, setMontant] = useState(charge.montant ?? "");
+  const [entrepriseId, setEntrepriseId] = useState(
+    charge.entreprise_id || entrepriseIdParDefaut || entreprises[0]?.id
+  );
 
-  const valide = nom.trim() !== "" && Number(montant) > 0;
+  const valide = nom.trim() !== "" && Number(montant) > 0 && (estEdition || Boolean(entrepriseId));
 
   return (
     <div style={styles.modalFond} onClick={onFermer}>
@@ -1679,6 +1980,21 @@ function ModalChargeFixe({ charge, onFermer, onValider }) {
           <h3 style={styles.modalTitre}>{estEdition ? "Modifier la charge" : "Nouvelle charge"}</h3>
           <button style={styles.modalFermer} onClick={onFermer}><X size={18} /></button>
         </div>
+
+        {estEdition ? (
+          <div style={styles.tauxAutoAide}>
+            {charge.entreprise_nom} — {libelleMois(charge.mois)}
+          </div>
+        ) : (
+          <label style={styles.champLabel}>
+            Entreprise
+            <select value={entrepriseId} onChange={(e) => setEntrepriseId(Number(e.target.value))} style={styles.select}>
+              {entreprises.map((e) => (
+                <option key={e.id} value={e.id}>{e.nom}</option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <label style={styles.champLabel}>
           Nom
@@ -1698,9 +2014,179 @@ function ModalChargeFixe({ charge, onFermer, onValider }) {
         <button
           style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}
           disabled={!valide}
-          onClick={() => valide && onValider({ nom: nom.trim(), montant: Number(montant) })}
+          onClick={() => valide && onValider({ nom: nom.trim(), montant: Number(montant), entreprise_id: entrepriseId })}
         >
           {estEdition ? "Enregistrer les modifications" : "Ajouter la charge"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Avis Google ----------
+
+function AvisGoogle({ donnees, peutModifier, peutToutVoir, estAdmin, commerciaux, dossiersTous, retrocommissions, utilisateur, onRafraichir, onErreur }) {
+  const [modal, setModal] = useState(null); // null | {}
+
+  const supprimer = async (a) => {
+    if (!confirm(`Supprimer l'avis de "${a.nom_client}" ?`)) return;
+    try {
+      await api(`/api/avis/${a.id}`, { method: "DELETE" });
+      onRafraichir();
+    } catch (e) {
+      onErreur(e.message);
+    }
+  };
+
+  return (
+    <div>
+      <div style={styles.sectionHeader}>
+        <h2 style={styles.sectionTitre}>Avis Google</h2>
+        {peutModifier && (
+          <button style={styles.boutonAjout} onClick={() => setModal({})}>
+            <Plus size={16} strokeWidth={2.5} /> Nouvel avis
+          </button>
+        )}
+      </div>
+      <div style={styles.tauxAutoAide}>
+        Le vendeur/acheteur est informatif — le bonus +5% reste basé sur 1 avis par voiture vendue dans le mois.
+      </div>
+
+      {donnees.length === 0 ? (
+        <div style={styles.videEtat}>Aucun avis pour ce filtre.</div>
+      ) : (
+        <div style={styles.tableauConteneur}>
+          <table style={{ ...styles.tableau, minWidth: "auto" }}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Date</th>
+                <th style={styles.th}>Client / Véhicule</th>
+                {peutToutVoir && <th style={styles.th}>Commercial</th>}
+                <th style={styles.th}>Avis de</th>
+                <th style={styles.th}>Rôle</th>
+                <th style={styles.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {donnees.map((a) => (
+                <tr key={a.id} style={styles.tr}>
+                  <td style={styles.td}>{new Date(a.date).toLocaleDateString("fr-FR")}</td>
+                  <td style={styles.td}>{a.client} — {a.voiture}</td>
+                  {peutToutVoir && <td style={styles.td}>{a.commercial_nom}</td>}
+                  <td style={styles.td}>{a.nom_client}</td>
+                  <td style={styles.td}>{a.role === "vendeur" ? "Vendeur" : "Acheteur"}</td>
+                  <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
+                    {peutModifier && (
+                      <button style={styles.boutonIcone} onClick={() => supprimer(a)} title="Supprimer">
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {modal && (
+        <ModalAvis
+          commerciaux={commerciaux}
+          dossiersTous={dossiersTous}
+          retrocommissions={retrocommissions}
+          estAdmin={estAdmin}
+          utilisateur={utilisateur}
+          onFermer={() => setModal(null)}
+          onValider={async (payload) => {
+            try {
+              await api("/api/avis", { method: "POST", body: payload });
+              setModal(null);
+              onRafraichir();
+            } catch (e) {
+              onErreur(e.message);
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ModalAvis({ commerciaux, dossiersTous, retrocommissions, estAdmin, utilisateur, onFermer, onValider }) {
+  const [commercialId, setCommercialId] = useState(estAdmin ? (commerciaux[0]?.id ?? "") : utilisateur.commercial_id);
+  const [dossierId, setDossierId] = useState("");
+  const [nomClient, setNomClient] = useState("");
+  const [role, setRole] = useState("vendeur");
+
+  const dossiersDisponibles = [
+    ...dossiersTous.filter((d) => String(d.commercial_id) === String(commercialId)),
+    ...retrocommissions
+      .filter((r) => String(r.commercial_id) === String(commercialId))
+      .map((r) => ({ id: r.dossier_id, date: r.date, client: r.client, voiture: r.voiture })),
+  ].sort((a, b) => b.date.localeCompare(a.date));
+
+  const valide = Boolean(commercialId) && Boolean(dossierId) && nomClient.trim() !== "";
+
+  return (
+    <div style={styles.modalFond} onClick={onFermer}>
+      <div style={styles.modalCarte} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalEnTete}>
+          <h3 style={styles.modalTitre}>Nouvel avis Google</h3>
+          <button style={styles.modalFermer} onClick={onFermer}><X size={18} /></button>
+        </div>
+
+        {estAdmin && (
+          <label style={styles.champLabel}>
+            Commercial
+            <select
+              value={commercialId}
+              onChange={(e) => { setCommercialId(Number(e.target.value)); setDossierId(""); }}
+              style={styles.select}
+            >
+              {commerciaux.map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
+            </select>
+          </label>
+        )}
+
+        <label style={styles.champLabel}>
+          Dossier concerné
+          <select value={dossierId} onChange={(e) => setDossierId(e.target.value)} style={styles.select}>
+            <option value="">— Choisir un dossier —</option>
+            {dossiersDisponibles.map((d) => (
+              <option key={d.id} value={d.id}>
+                {new Date(d.date).toLocaleDateString("fr-FR")} — {d.client} — {d.voiture}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label style={styles.champLabel}>
+          Nom de la personne qui a laissé l'avis
+          <input
+            style={styles.input}
+            value={nomClient}
+            onChange={(e) => setNomClient(e.target.value)}
+            placeholder="Nom complet"
+          />
+        </label>
+
+        <label style={styles.champLabel}>
+          Cette personne était…
+          <select value={role} onChange={(e) => setRole(e.target.value)} style={styles.select}>
+            <option value="vendeur">Le vendeur (a vendu la voiture au garage)</option>
+            <option value="acheteur">L'acheteur (a acheté la voiture au garage)</option>
+          </select>
+        </label>
+
+        <button
+          style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}
+          disabled={!valide}
+          onClick={() =>
+            valide &&
+            onValider({ commercial_id: commercialId, dossier_id: Number(dossierId), nom_client: nomClient.trim(), role })
+          }
+        >
+          Ajouter l'avis
         </button>
       </div>
     </div>
@@ -1711,7 +2197,7 @@ function ModalChargeFixe({ charge, onFermer, onValider }) {
 
 function EquipeEtEntreprises({
   entreprises, commerciaux, estAdmin,
-  onNouvelleEntreprise, onModifierEntreprise, onNouveauCommercial, onModifierCommercial,
+  onNouvelleEntreprise, onModifierEntreprise, onNouveauCommercial, onModifierCommercial, onSupprimerCommercial,
 }) {
   const nomEntreprise = (id) => entreprises.find((e) => e.id === id)?.nom || "—";
 
@@ -1778,9 +2264,12 @@ function EquipeEtEntreprises({
                   <span style={{ color: c.actif ? "#4FD1C5" : "#8B93A1" }}>{c.actif ? "Actif" : "Désactivé"}</span>
                 </td>
                 {estAdmin && (
-                  <td style={styles.td}>
+                  <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
                     <button style={styles.boutonIcone} onClick={() => onModifierCommercial(c)} title="Modifier">
                       <Pencil size={14} />
+                    </button>
+                    <button style={styles.boutonIcone} onClick={() => onSupprimerCommercial(c)} title="Supprimer">
+                      <Trash2 size={14} />
                     </button>
                   </td>
                 )}
@@ -1908,7 +2397,6 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
   const [actif, setActif] = useState(commercial.actif ?? true);
   const [identifiant, setIdentifiant] = useState("");
   const [motDePasse, setMotDePasse] = useState("");
-  const [avisObtenus, setAvisObtenus] = useState(commercial.avis_obtenus_mois_courant ?? 0);
 
   const valide = estEdition
     ? nom.trim() !== "" && (tauxAuto || Number(taux) > 0)
@@ -1972,23 +2460,11 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
         )}
 
         {estEdition && (
-          <label style={styles.champLabel}>
-            Avis Google obtenus ce mois-ci
-            <input
-              style={styles.input}
-              type="number"
-              step="1"
-              min="0"
-              value={avisObtenus}
-              onChange={(e) => setAvisObtenus(e.target.value)}
-            />
-          </label>
-        )}
-        {estEdition && (
           <div style={styles.tauxAutoAide}>
-            Objectif du mois : {commercial.objectif_avis_mois_courant} avis (1 par voiture vendue)
-            {" — "}
+            Avis Google ce mois-ci : {commercial.avis_obtenus_mois_courant} / {commercial.objectif_avis_mois_courant}
+            {" (1 par voiture vendue) — "}
             <strong>{commercial.bonus_avis_actif ? "bonus obtenu" : "bonus non obtenu"}</strong>
+            {" — se gèrent depuis l'onglet Avis Google."}
           </div>
         )}
 
@@ -2025,7 +2501,6 @@ function ModalCommercial({ commercial, entreprises, onFermer, onValider }) {
                     taux: tauxAuto ? null : Number(taux) / 100,
                     objectif_ca_ht_brut: objectif === "" ? null : Number(objectif),
                     actif, mot_de_passe: motDePasse,
-                    avis_obtenus: avisObtenus === "" ? 0 : Number(avisObtenus),
                   }
                 : {
                     nom, entreprise_id: entrepriseId,

@@ -2,27 +2,29 @@
 #
 # EN LOCAL : copiez ce fichier en "email_config.py" et remplissez les valeurs.
 # EN PRODUCTION : ne pas copier ce fichier — définissez plutôt les variables
-# d'environnement SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD et
-# ADMIN_RECOVERY_EMAIL dans le tableau de bord de l'hébergeur. Le serveur les
-# utilisera automatiquement à la place de ce fichier.
+# d'environnement RESEND_API_KEY, RESEND_FROM et ADMIN_RECOVERY_EMAIL dans le
+# tableau de bord de l'hébergeur. Le serveur les utilisera automatiquement à
+# la place de ce fichier.
 #
-# Pour Gmail / Google Workspace :
-#   1. Activez la validation en 2 étapes sur le compte Google qui enverra les emails
-#      (myaccount.google.com/security).
-#   2. Générez un "mot de passe d'application" : myaccount.google.com/apppasswords
-#      (choisissez "Autre", nommez-le par ex. "HSE Motors") -> Google vous donne
-#      un code à 16 caractères. C'est CE code qu'il faut mettre ci-dessous,
-#      PAS votre mot de passe Google habituel.
+# Pourquoi Resend (API HTTP) plutôt qu'un envoi SMTP classique (Gmail...) :
+# de nombreux hébergeurs (dont Railway) bloquent par défaut les ports SMTP
+# sortants (587, 465) pour lutter contre le spam. Une requête HTTPS vers
+# l'API de Resend passe toujours, quel que soit l'hébergeur.
+#
+# Mise en place (2 minutes, gratuit jusqu'à 100 emails/jour) :
+#   1. Créez un compte sur resend.com avec l'adresse qui doit RECEVOIR les
+#      codes de récupération (ex: la même que ADMIN_RECOVERY_EMAIL ci-dessous).
+#   2. Dashboard Resend -> API Keys -> Create API Key -> collez le résultat
+#      dans RESEND_API_KEY.
+#   3. Sans domaine à vous à vérifier, laissez RESEND_FROM sur la valeur par
+#      défaut "onboarding@resend.dev" : elle ne peut envoyer qu'à l'adresse
+#      utilisée pour créer le compte Resend, ce qui suffit ici puisque c'est
+#      la même adresse que ADMIN_RECOVERY_EMAIL. Si vous vérifiez un jour un
+#      domaine sur Resend, vous pourrez émettre depuis une adresse à vous.
 
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
+RESEND_API_KEY = ""
 
-# L'adresse Gmail qui enverra les emails de récupération.
-SMTP_USER = ""
+RESEND_FROM = "onboarding@resend.dev"
 
-# Le mot de passe d'application à 16 caractères généré à l'étape 2 ci-dessus.
-SMTP_PASSWORD = ""
-
-# L'adresse qui recevra les codes de récupération pour le compte admin.
-# Peut être la même que SMTP_USER, ou une autre adresse (ex: celle du gérant).
+# L'adresse qui recevra les codes de récupération pour les comptes admin.
 ADMIN_RECOVERY_EMAIL = ""

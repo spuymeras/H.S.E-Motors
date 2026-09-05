@@ -82,8 +82,14 @@ export default function App() {
   const [avis, setAvis] = useState([]);
   const [entrepriseFiltre, setEntrepriseFiltre] = useState("toutes");
   const [commercialFiltre, setCommercialFiltre] = useState("tous");
-  const [anneeFiltre, setAnneeFiltre] = useState("toutes");
-  const [moisFiltre, setMoisFiltre] = useState("tous");
+  // Par défaut, l'app s'ouvre sur le mois en cours (pas "toutes les années/tous les
+  // mois") : c'est la vue qu'on veut voir en arrivant, le global reste un filtre à
+  // choisir explicitement.
+  const maintenant = new Date();
+  const anneeCourante = String(maintenant.getFullYear());
+  const moisCourant = String(maintenant.getMonth() + 1).padStart(2, "0");
+  const [anneeFiltre, setAnneeFiltre] = useState(anneeCourante);
+  const [moisFiltre, setMoisFiltre] = useState(moisCourant);
   const [rechercheTexte, setRechercheTexte] = useState("");
   const [vue, setVue] = useState("dossiers");
   const [modalDossier, setModalDossier] = useState(null); // null | {} | dossier existant
@@ -267,7 +273,9 @@ export default function App() {
     return <EcranConnexion onConnexion={handleConnexion} />;
   }
 
-  const anneesDisponibles = [...new Set(dossiersTous.map((d) => d.date.slice(0, 4)))].sort((a, b) => b.localeCompare(a));
+  // L'année en cours est toujours listée, même sans aucun dossier encore enregistré
+  // dedans — sinon le filtre par défaut n'aurait pas d'option correspondante.
+  const anneesDisponibles = [...new Set([anneeCourante, ...dossiersTous.map((d) => d.date.slice(0, 4))])].sort((a, b) => b.localeCompare(a));
 
   const rechercheNormalisee = rechercheTexte.trim().toLowerCase();
 

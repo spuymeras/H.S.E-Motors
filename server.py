@@ -1805,6 +1805,11 @@ def mois_courant_str():
     return datetime.utcnow().strftime("%Y-%m")
 
 
+# Les charges sont saisies TTC ; seul le montant HT (après retrait de la TVA) entre
+# dans le calcul du bénéfice.
+TVA_CHARGES_FIXES = 0.20
+
+
 def charge_fixe_dict(row, ent):
     return {
         "id": row["id"],
@@ -1814,6 +1819,7 @@ def charge_fixe_dict(row, ent):
         "mois": row["mois"],
         "nom": row["nom"],
         "montant": row["montant"],
+        "montant_ht": row["montant"] / (1 + TVA_CHARGES_FIXES),
     }
 
 

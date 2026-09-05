@@ -313,7 +313,8 @@ export default function App() {
     if (moisFiltre !== "tous" && c.mois.slice(5, 7) !== moisFiltre) return false;
     return true;
   });
-  const chargesFixesTotal = chargesFixesAffichees.reduce((s, c) => s + c.montant, 0);
+  // Le bénéfice se calcule sur le montant HT des charges (saisies TTC, TVA retirée).
+  const chargesFixesTotal = chargesFixesAffichees.reduce((s, c) => s + c.montant_ht, 0);
 
   // Rétrocommissions reçues (ANNEXE 8) : même filtre que dossiersAffiches, sur le
   // commercial crédité et son entreprise (pas celle du dossier d'origine).
@@ -1074,7 +1075,7 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
       ? [{ id: "achat_garantie", label: "Achat garantie", valeur: fmtEUR(achatGarantie), icone: TrendingUp, couleur: "#8B93A1" }]
       : []),
     ...(estAdminStrict
-      ? [{ id: "charges_fixes", label: "Charges fixes", valeur: fmtEUR(chargesFixesTotal || 0), icone: Wallet, couleur: "#E8746B" }]
+      ? [{ id: "charges_fixes", label: "Charges fixes (HT)", valeur: fmtEUR(chargesFixesTotal || 0), icone: Wallet, couleur: "#E8746B" }]
       : []),
     ...(estAdminStrict
       ? [{
@@ -1860,6 +1861,7 @@ function libelleMois(mois) {
 function ChargesFixes({ donnees, entreprises, entrepriseFiltre, onRafraichir, onErreur, peutModifier }) {
   const [modal, setModal] = useState(null); // null | {} | charge existante
   const total = donnees.reduce((s, c) => s + c.montant, 0);
+  const totalHt = donnees.reduce((s, c) => s + c.montant_ht, 0);
   const moisCourant = moisCourantStr();
   const afficherEntreprise = entrepriseFiltre === "toutes";
 
@@ -1886,6 +1888,7 @@ function ChargesFixes({ donnees, entreprises, entrepriseFiltre, onRafraichir, on
       <div style={styles.tauxAutoAide}>
         Remises à zéro chaque mois et propres à chaque entreprise — les mois passés restent consultables mais ne
         sont plus modifiables. {!peutModifier && "Lecture seule — réservé à l'administrateur principal."}
+        {" "}Saisie en TTC ; le bénéfice se calcule sur le montant HT (TVA à 20% retirée automatiquement).
       </div>
 
       {donnees.length === 0 ? (
@@ -1898,7 +1901,8 @@ function ChargesFixes({ donnees, entreprises, entrepriseFiltre, onRafraichir, on
                 {afficherEntreprise && <th style={styles.th}>Entreprise</th>}
                 <th style={styles.th}>Mois</th>
                 <th style={styles.th}>Nom</th>
-                <th style={{ ...styles.th, textAlign: "right" }}>Montant (€)</th>
+                <th style={{ ...styles.th, textAlign: "right" }}>Montant TTC (€)</th>
+                <th style={{ ...styles.th, textAlign: "right" }}>Montant HT (€)</th>
                 <th style={styles.th}></th>
               </tr>
             </thead>
@@ -1918,6 +1922,7 @@ function ChargesFixes({ donnees, entreprises, entrepriseFiltre, onRafraichir, on
                     <td style={styles.td}>{libelleMois(c.mois)}</td>
                     <td style={styles.td}>{c.nom}</td>
                     <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(c.montant)}</td>
+                    <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#8B93A1" }}>{fmtEUR(c.montant_ht)}</td>
                     <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
                       {modifiable && (
                         <>
@@ -1939,6 +1944,7 @@ function ChargesFixes({ donnees, entreprises, entrepriseFiltre, onRafraichir, on
                 {afficherEntreprise && <td style={styles.td}></td>}
                 <td style={{ ...styles.td, fontWeight: 600 }} colSpan={2}>Total</td>
                 <td style={{ ...styles.td, ...styles.mono, textAlign: "right", fontWeight: 600 }}>{fmtEUR(total)}</td>
+                <td style={{ ...styles.td, ...styles.mono, textAlign: "right", fontWeight: 600, color: "#8B93A1" }}>{fmtEUR(totalHt)}</td>
                 <td style={styles.td}></td>
               </tr>
             </tfoot>
@@ -2015,9 +2021,16 @@ function ModalChargeFixe({ charge, entreprises, entrepriseIdParDefaut, onFermer,
         </label>
 
         <label style={styles.champLabel}>
-          Montant (€)
+          Montant TTC (€)
           <input style={styles.input} type="number" value={montant} onChange={(e) => setMontant(e.target.value)} placeholder="0" />
         </label>
+
+        <div style={styles.tcaApercu}>
+          <span>Montant HT (TVA 20% retirée)</span>
+          <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#8B93A1", fontWeight: 600 }}>
+            {fmtEUR((Number(montant) || 0) / 1.2)}
+          </span>
+        </div>
 
         <button
           style={{ ...styles.boutonConnexion, opacity: valide ? 1 : 0.5, cursor: valide ? "pointer" : "not-allowed" }}

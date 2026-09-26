@@ -1426,10 +1426,15 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
     (Number(garantiePrixVendu) || 0) +
     (Number(venteLivraison) || 0);
 
+  // Le moyen de paiement n'est obligatoire que s'il y a effectivement des frais
+  // d'intermédiation à payer.
+  const moyenPaiementRequis = (Number(fraisIntermediation) || 0) > 0;
+
   const valide =
     client.trim() !== "" &&
     voiture.trim() !== "" &&
     mandatTotal > 0 &&
+    (!moyenPaiementRequis || Boolean(moyenPaiement)) &&
     (!retrocommissionActive || Boolean(retrocommissionCommercialId));
 
   return (
@@ -1490,7 +1495,7 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
         </label>
 
         <label style={styles.champLabel}>
-          Moyen de paiement des frais d'intermédiation
+          Moyen de paiement des frais d'intermédiation{moyenPaiementRequis && " *"}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
             {MOYENS_PAIEMENT.map((m) => (
               <button
@@ -1503,6 +1508,11 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
               </button>
             ))}
           </div>
+          {moyenPaiementRequis && !moyenPaiement && (
+            <div style={{ ...styles.tauxAutoAide, color: "#E8746B" }}>
+              Obligatoire dès qu'il y a des frais d'intermédiation.
+            </div>
+          )}
         </label>
 
         <label style={styles.champLabel}>

@@ -1335,11 +1335,14 @@ def mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_
 MOYENS_PAIEMENT_VALIDES = ("CB", "Virement bancaire", "Lien de paiement")
 
 
-def parser_moyen_paiement(data):
-    """Retourne (moyen_paiement, erreur). Chaîne vide si non renseigné (facultatif)."""
+def parser_moyen_paiement(data, frais_intermediation):
+    """Retourne (moyen_paiement, erreur). Obligatoire dès qu'il y a des frais
+    d'intermédiation à payer ; facultatif sinon (chaîne vide)."""
     moyen = (data.get("moyen_paiement") or "").strip()
     if moyen and moyen not in MOYENS_PAIEMENT_VALIDES:
         return None, "Moyen de paiement invalide"
+    if not moyen and frais_intermediation > 0:
+        return None, "Moyen de paiement requis dès qu'il y a des frais d'intermédiation"
     return moyen, None
 
 
@@ -1408,7 +1411,7 @@ def create_dossier():
     if erreur:
         return erreur
 
-    moyen_paiement, erreur_moyen = parser_moyen_paiement(data)
+    moyen_paiement, erreur_moyen = parser_moyen_paiement(data, frais_intermediation)
     if erreur_moyen:
         return jsonify(error=erreur_moyen), 400
 
@@ -1474,7 +1477,7 @@ def update_dossier(dossier_id):
         return erreur
 
     data.setdefault("moyen_paiement", row["moyen_paiement"])
-    moyen_paiement, erreur_moyen = parser_moyen_paiement(data)
+    moyen_paiement, erreur_moyen = parser_moyen_paiement(data, frais_intermediation)
     if erreur_moyen:
         return jsonify(error=erreur_moyen), 400
 

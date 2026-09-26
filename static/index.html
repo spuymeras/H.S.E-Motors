@@ -521,6 +521,14 @@ export default function App() {
                   setErreur(e.message);
                 }
               }}
+              onBasculerLivre={async (d) => {
+                try {
+                  await api(`/api/dossiers/${d.id}/livre`, { method: "PUT", body: { livre: !d.livre } });
+                  await rafraichir();
+                } catch (e) {
+                  setErreur(e.message);
+                }
+              }}
             />
 
             {retrocommissionsAffichees.length > 0 && (
@@ -1226,8 +1234,9 @@ function useColonnesFigees() {
   return actives;
 }
 
-function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprimer }) {
+function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprimer, onBasculerLivre }) {
   const colonnesFigees = useColonnesFigees();
+  const figeLivre = colonnesFigees ? styles.colFigeLivre : {};
   const figeDate = colonnesFigees ? styles.colFigeDate : {};
   const figeClient = colonnesFigees ? styles.colFigeClient : {};
   const figeVehicule = colonnesFigees ? styles.colFigeVehicule : {};
@@ -1241,6 +1250,7 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
       <table style={styles.tableau}>
         <thead>
           <tr>
+            <th style={{ ...styles.th, ...figeLivre }}>Livré</th>
             <th style={{ ...styles.th, ...figeDate }}>Date</th>
             <th style={{ ...styles.th, ...figeClient }}>Client</th>
             <th style={{ ...styles.th, ...figeVehicule }}>Véhicule</th>
@@ -1265,6 +1275,16 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
         <tbody>
           {dossiers.map((d) => (
             <tr key={d.id} style={styles.tr}>
+              <td style={{ ...styles.td, ...figeLivre, textAlign: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={d.livre}
+                  disabled={!peutModifier}
+                  onChange={() => onBasculerLivre(d)}
+                  title={d.livre ? "Marquer comme non livré" : "Marquer comme livré"}
+                  style={{ width: 16, height: 16, cursor: peutModifier ? "pointer" : "default" }}
+                />
+              </td>
               <td style={{ ...styles.td, ...figeDate }}>{new Date(d.date).toLocaleDateString("fr-FR")}</td>
               <td style={{ ...styles.td, ...figeClient }}>{d.client}</td>
               <td style={{ ...styles.td, ...figeVehicule }}>
@@ -2757,10 +2777,11 @@ const styles = {
     textAlign: "left", fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.4, color: "#8B93A1",
     padding: "12px 18px", borderBottom: "1px solid #2A323D", fontWeight: 500, whiteSpace: "nowrap",
   },
-  colFigeDate: { position: "sticky", left: 0, zIndex: 2, background: "#1C232D", minWidth: 112, maxWidth: 112 },
-  colFigeClient: { position: "sticky", left: 112, zIndex: 2, background: "#1C232D", minWidth: 150, maxWidth: 150 },
+  colFigeLivre: { position: "sticky", left: 0, zIndex: 2, background: "#1C232D", minWidth: 56, maxWidth: 56, textAlign: "center" },
+  colFigeDate: { position: "sticky", left: 56, zIndex: 2, background: "#1C232D", minWidth: 112, maxWidth: 112 },
+  colFigeClient: { position: "sticky", left: 168, zIndex: 2, background: "#1C232D", minWidth: 150, maxWidth: 150 },
   colFigeVehicule: {
-    position: "sticky", left: 262, zIndex: 2, background: "#1C232D", minWidth: 170, maxWidth: 170,
+    position: "sticky", left: 318, zIndex: 2, background: "#1C232D", minWidth: 170, maxWidth: 170,
     boxShadow: "6px 0 8px -4px rgba(0,0,0,0.5)",
   },
   tr: { borderBottom: "1px solid #232A34" },

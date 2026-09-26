@@ -118,7 +118,8 @@ CREATE TABLE IF NOT EXISTS dossiers (
     vente_livraison REAL NOT NULL DEFAULT 0,
     exporte_excel_le TEXT,
     role_commercial TEXT NOT NULL DEFAULT 'les_deux',
-    moyen_paiement TEXT NOT NULL DEFAULT ''
+    moyen_paiement TEXT NOT NULL DEFAULT '',
+    livre INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS retrocommissions (
@@ -210,6 +211,8 @@ def migrer_db(db):
         db.execute("ALTER TABLE dossiers ADD COLUMN role_commercial TEXT NOT NULL DEFAULT 'les_deux'")
     if "moyen_paiement" not in colonnes:
         db.execute("ALTER TABLE dossiers ADD COLUMN moyen_paiement TEXT NOT NULL DEFAULT ''")
+    if "livre" not in colonnes:
+        db.execute("ALTER TABLE dossiers ADD COLUMN livre INTEGER NOT NULL DEFAULT 0")
 
     colonnes_commerciaux = {row["name"] for row in db.execute("PRAGMA table_info(commerciaux)")}
     if "objectif_ca_ht_brut" not in colonnes_commerciaux:
@@ -1277,6 +1280,7 @@ def dossier_dict(row, com, ent, db):
         "achat_livraison": row["achat_livraison"],
         "vente_livraison": row["vente_livraison"],
         "moyen_paiement": row["moyen_paiement"],
+        "livre": bool(row["livre"]),
         "tca": tca,
         "cash_sentinel": CASH_SENTINEL,
         "total_ht": total_ht,
@@ -1521,6 +1525,25 @@ def delete_dossier(dossier_id):
     db.execute("DELETE FROM dossiers WHERE id = ?", (dossier_id,))
     db.commit()
     return jsonify(ok=True)
+
+
+@app.put("/api/dossiers/<int:dossier_id>/livre")
+@ecriture_requise
+def basculer_livre_dossier(dossier_id):
+    """Bascule uniquement le statut « livré » — une route dédiée, séparée de la mise à
+    jour complète du dossier, pour ne jamais risquer d'entraîner la validation de la
+    rétrocommission (obligatoire dès que role_commercial != "les_deux") juste pour
+    cocher une case."""
+    db = get_db()
+    row = load_dossier_for_user(db, dossier_id)
+    if row is None:
+        return jsonify(error="Dossier introuvable"), 404
+    data = request.get_json(silent=True) or {}
+    livre = bool(data.get("livre"))
+    db.execute("UPDATE dossiers SET livre = ? WHERE id = ?", (1 if livre else 0, dossier_id))
+    db.commit()
+    row = db.execute("SELECT * FROM dossiers WHERE id = ?", (dossier_id,)).fetchone()
+    return jsonify(enrich(db, [row])[0])
 
 
 @app.get("/api/retrocommissions")

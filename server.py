@@ -117,7 +117,8 @@ CREATE TABLE IF NOT EXISTS dossiers (
     achat_livraison REAL NOT NULL DEFAULT 0,
     vente_livraison REAL NOT NULL DEFAULT 0,
     exporte_excel_le TEXT,
-    role_commercial TEXT NOT NULL DEFAULT 'les_deux'
+    role_commercial TEXT NOT NULL DEFAULT 'les_deux',
+    moyen_paiement TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS retrocommissions (
@@ -207,6 +208,8 @@ def migrer_db(db):
         db.execute("ALTER TABLE dossiers ADD COLUMN vente_livraison REAL NOT NULL DEFAULT 0")
     if "role_commercial" not in colonnes:
         db.execute("ALTER TABLE dossiers ADD COLUMN role_commercial TEXT NOT NULL DEFAULT 'les_deux'")
+    if "moyen_paiement" not in colonnes:
+        db.execute("ALTER TABLE dossiers ADD COLUMN moyen_paiement TEXT NOT NULL DEFAULT ''")
 
     colonnes_commerciaux = {row["name"] for row in db.execute("PRAGMA table_info(commerciaux)")}
     if "objectif_ca_ht_brut" not in colonnes_commerciaux:
@@ -1273,6 +1276,7 @@ def dossier_dict(row, com, ent, db):
         "commission_agence": row["commission_agence"],
         "achat_livraison": row["achat_livraison"],
         "vente_livraison": row["vente_livraison"],
+        "moyen_paiement": row["moyen_paiement"],
         "tca": tca,
         "cash_sentinel": CASH_SENTINEL,
         "total_ht": total_ht,
@@ -1326,6 +1330,17 @@ def resolve_commercial_id(data):
 def mandat_total_calcule(frais_intermediation, commission_agence, garantie_prix_vendu, vente_livraison):
     """Le mandat total n'est plus saisi : c'est la somme de ces montants."""
     return frais_intermediation + commission_agence + garantie_prix_vendu + vente_livraison
+
+
+MOYENS_PAIEMENT_VALIDES = ("CB", "Virement bancaire", "Lien de paiement")
+
+
+def parser_moyen_paiement(data):
+    """Retourne (moyen_paiement, erreur). Chaîne vide si non renseigné (facultatif)."""
+    moyen = (data.get("moyen_paiement") or "").strip()
+    if moyen and moyen not in MOYENS_PAIEMENT_VALIDES:
+        return None, "Moyen de paiement invalide"
+    return moyen, None
 
 
 def parser_role_et_retrocommission(data, commercial_id, db):
@@ -1393,10 +1408,14 @@ def create_dossier():
     if erreur:
         return erreur
 
+    moyen_paiement, erreur_moyen = parser_moyen_paiement(data)
+    if erreur_moyen:
+        return jsonify(error=erreur_moyen), 400
+
     cur = db.execute(
         """INSERT INTO dossiers
-           (commercial_id, date, client, voiture, plaque, garantie_achat, garantie_prix_vendu, mandat_total, frais_intermediation, nettoyage, commission_agence, achat_livraison, vente_livraison, role_commercial)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (commercial_id, date, client, voiture, plaque, garantie_achat, garantie_prix_vendu, mandat_total, frais_intermediation, nettoyage, commission_agence, achat_livraison, vente_livraison, role_commercial, moyen_paiement)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             commercial_id,
             data.get("date") or str(date.today()),
@@ -1412,6 +1431,7 @@ def create_dossier():
             float(data.get("achat_livraison") or 0),
             vente_livraison,
             role_commercial,
+            moyen_paiement,
         ),
     )
     sauvegarder_retrocommission(db, cur.lastrowid, retro_commercial_id, retro_role)
@@ -1453,10 +1473,15 @@ def update_dossier(dossier_id):
     if erreur:
         return erreur
 
+    data.setdefault("moyen_paiement", row["moyen_paiement"])
+    moyen_paiement, erreur_moyen = parser_moyen_paiement(data)
+    if erreur_moyen:
+        return jsonify(error=erreur_moyen), 400
+
     db.execute(
         """UPDATE dossiers SET commercial_id = ?, date = ?, client = ?, voiture = ?, plaque = ?,
            garantie_achat = ?, garantie_prix_vendu = ?, mandat_total = ?, frais_intermediation = ?, nettoyage = ?,
-           commission_agence = ?, achat_livraison = ?, vente_livraison = ?, role_commercial = ? WHERE id = ?""",
+           commission_agence = ?, achat_livraison = ?, vente_livraison = ?, role_commercial = ?, moyen_paiement = ? WHERE id = ?""",
         (
             commercial_id,
             data.get("date", row["date"]),
@@ -1472,6 +1497,7 @@ def update_dossier(dossier_id):
             float(data.get("achat_livraison", row["achat_livraison"]) or 0),
             vente_livraison,
             role_commercial,
+            moyen_paiement,
             dossier_id,
         ),
     )
@@ -1953,6 +1979,8 @@ def construire_classeur_export(commerciaux_rows, dossiers_par_commercial):
             ws.cell(row=i, column=3, value=d["plaque"])
             ws.cell(row=i, column=4, value=d["client"])
             ws.cell(row=i, column=5, value=d["frais_intermediation"])
+            if d["moyen_paiement"]:
+                ws.cell(row=i, column=6, value=d["moyen_paiement"])
             try:
                 ws.cell(row=i, column=7, value=datetime.strptime(d["date"], "%Y-%m-%d").date())
             except ValueError:

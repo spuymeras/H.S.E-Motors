@@ -1247,6 +1247,7 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
             {estAdmin && <th style={styles.th}>Commercial</th>}
             {estAdmin && <th style={styles.th}>Entreprise</th>}
             <th style={{ ...styles.th, textAlign: "right" }}>Frais d'intermédiation</th>
+            <th style={styles.th}>Moyen paiement</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Commission d'agence</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Gar. vendu</th>
             <th style={{ ...styles.th, textAlign: "right" }}>Gar. achat</th>
@@ -1292,6 +1293,7 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
                 </td>
               )}
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.frais_intermediation)}</td>
+              <td style={styles.td}>{d.moyen_paiement || "—"}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.commission_agence)}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.garantie_prix_vendu)}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.garantie_achat)}</td>
@@ -1381,6 +1383,8 @@ function TableauRetrocommissions({ dossiers, estAdmin }) {
 
 // ---------- Modale dossier (création / édition) ----------
 
+const MOYENS_PAIEMENT = ["CB", "Virement bancaire", "Lien de paiement"];
+
 function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, onValider }) {
   const estEdition = Boolean(dossier.id);
   const [commercialId, setCommercialId] = useState(
@@ -1392,6 +1396,7 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
   const [garantieAchat, setGarantieAchat] = useState(dossier.garantie_achat ?? "");
   const [garantiePrixVendu, setGarantiePrixVendu] = useState(dossier.garantie_prix_vendu ?? "");
   const [fraisIntermediation, setFraisIntermediation] = useState(dossier.frais_intermediation ?? "");
+  const [moyenPaiement, setMoyenPaiement] = useState(dossier.moyen_paiement || "");
   const [nettoyage, setNettoyage] = useState(dossier.nettoyage ?? "");
   const [commissionAgence, setCommissionAgence] = useState(dossier.commission_agence ?? "");
   const [achatLivraison, setAchatLivraison] = useState(dossier.achat_livraison ?? "");
@@ -1482,6 +1487,22 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
             onChange={(e) => setFraisIntermediation(e.target.value)}
             placeholder="0"
           />
+        </label>
+
+        <label style={styles.champLabel}>
+          Moyen de paiement des frais d'intermédiation
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+            {MOYENS_PAIEMENT.map((m) => (
+              <button
+                key={m}
+                type="button"
+                style={{ ...styles.puceFiltre, ...(moyenPaiement === m ? styles.puceFiltreActive : {}) }}
+                onClick={() => setMoyenPaiement(moyenPaiement === m ? "" : m)}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
         </label>
 
         <label style={styles.champLabel}>
@@ -1623,6 +1644,7 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
               garantie_prix_vendu: Number(garantiePrixVendu) || 0,
               mandat_total: mandatTotal,
               frais_intermediation: Number(fraisIntermediation) || 0,
+              moyen_paiement: moyenPaiement,
               nettoyage: Number(nettoyage) || 0,
               commission_agence: Number(commissionAgence) || 0,
               achat_livraison: Number(achatLivraison) || 0,

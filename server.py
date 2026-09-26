@@ -1546,6 +1546,31 @@ def basculer_livre_dossier(dossier_id):
     return jsonify(enrich(db, [row])[0])
 
 
+@app.put("/api/dossiers/<int:dossier_id>/mois-suivant")
+@ecriture_requise
+def reporter_dossier_mois_suivant(dossier_id):
+    """Décale le dossier au 1er du mois suivant (le véhicule est livré plus tard que
+    prévu) — pour qu'il compte dans le CA/la commission du bon mois sans avoir à le
+    supprimer et le recréer. Route dédiée, ne touche qu'à la date, pour les mêmes
+    raisons que /livre (ne pas déclencher la validation de la rétrocommission)."""
+    db = get_db()
+    row = load_dossier_for_user(db, dossier_id)
+    if row is None:
+        return jsonify(error="Dossier introuvable"), 404
+
+    annee, mois = int(row["date"][:4]), int(row["date"][5:7])
+    if mois == 12:
+        annee, mois = annee + 1, 1
+    else:
+        mois += 1
+    nouvelle_date = f"{annee:04d}-{mois:02d}-01"
+
+    db.execute("UPDATE dossiers SET date = ? WHERE id = ?", (nouvelle_date, dossier_id))
+    db.commit()
+    row = db.execute("SELECT * FROM dossiers WHERE id = ?", (dossier_id,)).fetchone()
+    return jsonify(enrich(db, [row])[0])
+
+
 @app.get("/api/retrocommissions")
 @login_required
 def list_retrocommissions():

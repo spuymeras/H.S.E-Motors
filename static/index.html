@@ -18,7 +18,42 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
 <style>
-  html, body { margin: 0; padding: 0; background: #14171C; }
+  :root {
+    --bg: #14171C;
+    --surface: #1C232D;
+    --surface-2: #232A34;
+    --border: #2A323D;
+    --border-strong: #384152;
+    --text: #E7E5E0;
+    --text-muted: #8B93A1;
+    --on-accent: #14171C;
+    --accent: #E8A33D;
+    --positive: #4FD1C5;
+    --negative: #E8746B;
+    --purple: #C58AF0;
+    --blue: #5B8DEF;
+    --surface-sunken: #0F1216;
+  }
+  :root[data-theme="light"] {
+    --bg: #F5F4F0;
+    --surface: #FFFFFF;
+    --surface-2: #F0EEE9;
+    --border: rgba(20,23,28,0.12);
+    --border-strong: rgba(20,23,28,0.22);
+    --text: #14171C;
+    --text-muted: #5C606A;
+    --on-accent: #14171C;
+    --accent: #E8A33D;
+    --positive: #0B7A70;
+    --negative: #B3261E;
+    --purple: #8447C4;
+    --blue: #3457B2;
+    --surface-sunken: #EDEBE5;
+  }
+  html, body { margin: 0; padding: 0; background: var(--bg); }
+  /* Le logo est un PNG blanc fixe : en thème clair, on l'inverse pour qu'il reste visible
+     sur fond clair (sans avoir à fournir un second fichier image). */
+  :root[data-theme="light"] .hse-logo { filter: invert(1); }
   @keyframes tourner { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>
 <script>
@@ -45,7 +80,7 @@
 <script type="text/babel" data-type="module" data-presets="react">
 import React, { useState, useEffect, useCallback } from "react";
 import { createRoot } from "react-dom/client";
-import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw, Target, Building2, Minimize2, Maximize2, Star, FileSpreadsheet, FileUp, Receipt, Wallet, PiggyBank, FastForward } from "lucide-react";
+import { Car, TrendingUp, Users, LogOut, Plus, X, Pencil, Trash2, ShieldCheck, Search, RefreshCw, Target, Building2, Minimize2, Maximize2, Star, FileSpreadsheet, FileUp, Receipt, Wallet, PiggyBank, FastForward, Sun, Moon } from "lucide-react";
 
 // ---------- API ----------
 
@@ -70,6 +105,24 @@ const fmtEUR = (n) =>
 // ---------- App ----------
 
 export default function App() {
+  // Thème clair/sombre : préférence par appareil (jamais synchronisée entre
+  // commerciaux), appliquée globalement via l'attribut data-theme sur <html>.
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem("hse_theme") || "dark";
+    } catch {
+      return "dark";
+    }
+  });
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem("hse_theme", theme);
+    } catch {
+      // Stockage indisponible (navigation privée…) : le thème reste actif pour la session en cours.
+    }
+  }, [theme]);
+
   const [chargement, setChargement] = useState(true);
   const [utilisateur, setUtilisateur] = useState(null);
   const [entreprises, setEntreprises] = useState([]);
@@ -371,6 +424,8 @@ export default function App() {
         onDeconnexion={handleDeconnexion}
         onActualiser={actualiserManuellement}
         actualisation={actualisation}
+        theme={theme}
+        onChangerTheme={setTheme}
       />
 
       <div style={styles.corps}>
@@ -493,7 +548,7 @@ export default function App() {
             </div>
 
             <div style={styles.rechercheConteneur}>
-              <Search size={15} color="#8B93A1" />
+              <Search size={15} color="var(--text-muted)" />
               <input
                 style={styles.rechercheInput}
                 value={rechercheTexte}
@@ -742,7 +797,7 @@ function EcranConnexion({ onConnexion }) {
       {mode === "connexion" ? (
         <form style={styles.carteConnexion} onSubmit={connecter}>
           <div style={styles.logoConnexion}>
-            <img src="/logo.png" alt="H.S.E Motors" style={styles.logoImage} />
+            <img src="/logo.png" alt="H.S.E Motors" className="hse-logo" style={styles.logoImage} />
           </div>
           <p style={styles.sousTitreConnexion}>Connectez-vous à votre espace</p>
 
@@ -841,7 +896,7 @@ function RecuperationMotDePasse({ onRetour }) {
   return (
     <form style={styles.carteConnexion} onSubmit={etape === "demande" ? demanderCode : reinitialiser}>
       <div style={styles.logoConnexion}>
-        <img src="/logo.png" alt="H.S.E Motors" style={styles.logoImage} />
+        <img src="/logo.png" alt="H.S.E Motors" className="hse-logo" style={styles.logoImage} />
       </div>
       <p style={styles.sousTitreConnexion}>
         {etape === "demande" ? "Récupération du mot de passe admin" : "Entrez le code reçu par email"}
@@ -933,11 +988,11 @@ function TickerBandeau({ entreprises, dossiers }) {
 
 // ---------- En-tête ----------
 
-function EnTete({ utilisateur, onDeconnexion, onActualiser, actualisation }) {
+function EnTete({ utilisateur, onDeconnexion, onActualiser, actualisation, theme, onChangerTheme }) {
   return (
     <header style={styles.enTete}>
       <div style={styles.enTeteGauche}>
-        <img src="/logo-icon.png" alt="H.S.E Motors" style={styles.enTeteLogo} />
+        <img src="/logo-icon.png" alt="H.S.E Motors" className="hse-logo" style={styles.enTeteLogo} />
         <span style={styles.enTeteTitre}>H.S.E Motors</span>
       </div>
       <div style={styles.enTeteDroite}>
@@ -949,6 +1004,14 @@ function EnTete({ utilisateur, onDeconnexion, onActualiser, actualisation }) {
         >
           <RefreshCw size={16} style={actualisation ? styles.iconeRotation : undefined} />
           <span style={styles.boutonActualiserTexte}>Actualiser</span>
+        </button>
+        <button
+          type="button"
+          style={styles.boutonDeconnexion}
+          onClick={() => onChangerTheme(theme === "dark" ? "light" : "dark")}
+          title={theme === "dark" ? "Passer en thème clair" : "Passer en thème sombre"}
+        >
+          {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
         </button>
         <span style={styles.badgeRole}>
           {utilisateur.role === "admin" ? "Vue admin" : utilisateur.role === "animateur" ? "Vue animateur" : "Vue commercial"}
@@ -1081,22 +1144,22 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
   const mandatMoyen = voituresVendues > 0 ? chiffreAffairesHT / voituresVendues : 0;
 
   const kpisBase = [
-    { id: "ca_ht_net", label: "CA HT net", valeur: fmtEUR(chiffreAffairesHT), icone: TrendingUp, couleur: "#E8A33D" },
-    { id: "ca_ht_brut", label: "CA HT brut", valeur: fmtEUR(caHtBrut), icone: TrendingUp, couleur: "#5B8DEF" },
-    { id: "ca_ttc", label: "CA TTC", valeur: fmtEUR(caTtc), icone: TrendingUp, couleur: "#4FD1C5" },
-    { id: "garanties_vendues", label: "Nombre de garanties vendues", valeur: garantiesVendues, icone: ShieldCheck, couleur: "#C58AF0" },
-    { id: "commissions_dues", label: "Commissions dues", valeur: fmtEUR(totalCommissions), icone: Users, couleur: "#4FD1C5" },
-    { id: "voitures_vendues", label: "Voitures vendues", valeur: voituresVendues, icone: Car, couleur: "#8B93A1" },
-    { id: "taux_garanti", label: "Taux de véhicule garantis", valeur: `${tauxVehiculesGarantis.toFixed(1)}%`, icone: ShieldCheck, couleur: "#4FD1C5" },
-    { id: "ca_frais_intermediation", label: "CA frais d'intermédiation", valeur: fmtEUR(caFraisIntermediation), icone: TrendingUp, couleur: "#5B8DEF" },
-    { id: "ca_garantie_vendue", label: "CA garantie vendue", valeur: fmtEUR(caGarantieVendue), icone: ShieldCheck, couleur: "#C58AF0" },
-    { id: "mandat_moyen", label: "Mandat moyen", valeur: fmtEUR(mandatMoyen), icone: TrendingUp, couleur: "#E8A33D" },
-    { id: "refacturation", label: "Refacturation", valeur: fmtEUR(refacturationTotal || 0), icone: Receipt, couleur: "#C58AF0" },
+    { id: "ca_ht_net", label: "CA HT net", valeur: fmtEUR(chiffreAffairesHT), icone: TrendingUp, couleur: "var(--accent)" },
+    { id: "ca_ht_brut", label: "CA HT brut", valeur: fmtEUR(caHtBrut), icone: TrendingUp, couleur: "var(--blue)" },
+    { id: "ca_ttc", label: "CA TTC", valeur: fmtEUR(caTtc), icone: TrendingUp, couleur: "var(--positive)" },
+    { id: "garanties_vendues", label: "Nombre de garanties vendues", valeur: garantiesVendues, icone: ShieldCheck, couleur: "var(--purple)" },
+    { id: "commissions_dues", label: "Commissions dues", valeur: fmtEUR(totalCommissions), icone: Users, couleur: "var(--positive)" },
+    { id: "voitures_vendues", label: "Voitures vendues", valeur: voituresVendues, icone: Car, couleur: "var(--text-muted)" },
+    { id: "taux_garanti", label: "Taux de véhicule garantis", valeur: `${tauxVehiculesGarantis.toFixed(1)}%`, icone: ShieldCheck, couleur: "var(--positive)" },
+    { id: "ca_frais_intermediation", label: "CA frais d'intermédiation", valeur: fmtEUR(caFraisIntermediation), icone: TrendingUp, couleur: "var(--blue)" },
+    { id: "ca_garantie_vendue", label: "CA garantie vendue", valeur: fmtEUR(caGarantieVendue), icone: ShieldCheck, couleur: "var(--purple)" },
+    { id: "mandat_moyen", label: "Mandat moyen", valeur: fmtEUR(mandatMoyen), icone: TrendingUp, couleur: "var(--accent)" },
+    { id: "refacturation", label: "Refacturation", valeur: fmtEUR(refacturationTotal || 0), icone: Receipt, couleur: "var(--purple)" },
     ...(estAdmin
-      ? [{ id: "achat_garantie", label: "Achat garantie", valeur: fmtEUR(achatGarantie), icone: TrendingUp, couleur: "#8B93A1" }]
+      ? [{ id: "achat_garantie", label: "Achat garantie", valeur: fmtEUR(achatGarantie), icone: TrendingUp, couleur: "var(--text-muted)" }]
       : []),
     ...(estAdminStrict
-      ? [{ id: "charges_fixes", label: "Charges fixes (HT)", valeur: fmtEUR(chargesFixesTotal || 0), icone: Wallet, couleur: "#E8746B" }]
+      ? [{ id: "charges_fixes", label: "Charges fixes (HT)", valeur: fmtEUR(chargesFixesTotal || 0), icone: Wallet, couleur: "var(--negative)" }]
       : []),
     ...(estAdminStrict
       ? [{
@@ -1104,7 +1167,7 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
           label: "Bénéfice",
           valeur: fmtEUR(chiffreAffairesHT - totalCommissions - (chargesFixesTotal || 0)),
           icone: PiggyBank,
-          couleur: "#4FD1C5",
+          couleur: "var(--positive)",
         }]
       : []),
     ...(commercialCible && commercialCible.objectif_ca_ht_brut != null
@@ -1114,9 +1177,9 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
           valeur: `${commercialCible.pourcentage_atteinte.toFixed(0)}%`,
           icone: Target,
           couleur:
-            commercialCible.pourcentage_atteinte >= 100 ? "#4FD1C5"
-            : commercialCible.pourcentage_atteinte >= 50 ? "#E8A33D"
-            : "#E8746B",
+            commercialCible.pourcentage_atteinte >= 100 ? "var(--positive)"
+            : commercialCible.pourcentage_atteinte >= 50 ? "var(--accent)"
+            : "var(--negative)",
         }]
       : []),
     ...(commercialCible
@@ -1127,7 +1190,7 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
             : `Bonus avis Google si atteint (${commercialCible.avis_obtenus_mois_courant}/${commercialCible.objectif_avis_mois_courant} avis)`,
           valeur: fmtEUR(chiffreAffairesHT * 0.05),
           icone: Star,
-          couleur: commercialCible.bonus_avis_actif ? "#4FD1C5" : "#8B93A1",
+          couleur: commercialCible.bonus_avis_actif ? "var(--positive)" : "var(--text-muted)",
         }]
       : []),
     ...(entrepriseCible && entrepriseCible.objectif_ca_ht_brut != null
@@ -1137,9 +1200,9 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
           valeur: `${entrepriseCible.pourcentage_atteinte.toFixed(0)}%`,
           icone: Building2,
           couleur:
-            entrepriseCible.pourcentage_atteinte >= 100 ? "#4FD1C5"
-            : entrepriseCible.pourcentage_atteinte >= 50 ? "#E8A33D"
-            : "#E8746B",
+            entrepriseCible.pourcentage_atteinte >= 100 ? "var(--positive)"
+            : entrepriseCible.pourcentage_atteinte >= 50 ? "var(--accent)"
+            : "var(--negative)",
         }]
       : []),
     ...(objectifGlobalEntreprises
@@ -1150,7 +1213,7 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
             label: `Objectif global du mois (${fmtEUR(objectifGlobalEntreprises.objectif)})`,
             valeur: `${pct.toFixed(0)}%`,
             icone: Building2,
-            couleur: pct >= 100 ? "#4FD1C5" : pct >= 50 ? "#E8A33D" : "#E8746B",
+            couleur: pct >= 100 ? "var(--positive)" : pct >= 50 ? "var(--accent)" : "var(--negative)",
           }];
         })()
       : []),
@@ -1177,12 +1240,18 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
     <div style={styles.kpiRangee}>
       {kpis.map((k, index) => {
         const estReduit = (kpiReduits || []).includes(k.id);
+        // Les 3 premiers KPI de l'ordre choisi (glisser-déposer) s'affichent en grand,
+        // les suivants en version compacte — sans icône ni encadré individuel une fois
+        // dépassé ce rang, pour une vue plus simple. Faire glisser un KPI en tête (ou
+        // hors des 3 premiers) suffit à basculer son style, aucun réglage séparé.
+        const estHero = index < 3 && !estReduit;
+        const estDetail = index >= 3 && !estReduit;
         return (
           <div
             key={k.id}
             style={{
               ...styles.kpiCarte,
-              ...(estReduit ? styles.kpiCarteReduite : {}),
+              ...(estReduit ? styles.kpiCarteReduite : estHero ? styles.kpiCarteHero : styles.kpiCarteDetail),
               ...(peutReorganiser ? styles.kpiCarteDeplacable : {}),
               ...(indexGlisse === index ? styles.kpiCarteEnCoursDeplacement : {}),
             }}
@@ -1199,13 +1268,21 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
             }}
             onDragEnd={() => setIndexGlisse(null)}
           >
-            <div style={{ ...styles.kpiIcone, background: `${k.couleur}22`, ...(estReduit ? styles.kpiIconeReduite : {}) }}>
-              <k.icone size={estReduit ? 15 : 18} color={k.couleur} strokeWidth={2} />
-            </div>
-            {!estReduit && (
-              <div>
-                <div style={styles.kpiValeur}>{k.valeur}</div>
+            {estReduit && (
+              <div style={{ ...styles.kpiIcone, background: `color-mix(in srgb, ${k.couleur} 16%, transparent)`, ...styles.kpiIconeReduite }}>
+                <k.icone size={15} color={k.couleur} strokeWidth={2} />
+              </div>
+            )}
+            {estHero && (
+              <div style={{ display: "flex", flexDirection: "column", width: "100%" }}>
                 <div style={styles.kpiLabel}>{k.label}</div>
+                <div style={styles.kpiValeurHero}>{k.valeur}</div>
+              </div>
+            )}
+            {estDetail && (
+              <div style={{ display: "flex", flexDirection: "column", width: "100%" }}>
+                <div style={styles.kpiLabel}>{k.label}</div>
+                <div style={styles.kpiValeur}>{k.valeur}</div>
               </div>
             )}
             {estReduit && <div style={styles.kpiValeurReduite}>{k.valeur}</div>}
@@ -1302,7 +1379,7 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
               <td style={{ ...styles.td, ...figeClient }}>{d.client}</td>
               <td style={{ ...styles.td, ...figeVehicule }}>
                 <div>{d.voiture}</div>
-                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "#8B93A1" }}>
+                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--text-muted)" }}>
                   {d.plaque}
                 </div>
               </td>
@@ -1310,7 +1387,7 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
                 <td style={styles.td}>
                   <div>{d.commercial_nom}</div>
                   {d.role_commercial !== "les_deux" && (
-                    <div style={{ fontSize: 11.5, color: "#8B93A1" }}>
+                    <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
                       {d.role_commercial === "entrant" ? "Entrant" : "Sortant"}
                       {d.retrocommission && ` · +${d.retrocommission.commercial_nom} (${d.retrocommission.role === "entrant" ? "Entrant" : "Sortant"})`}
                     </div>
@@ -1330,22 +1407,22 @@ function TableauVentes({ dossiers, estAdmin, peutModifier, onModifier, onSupprim
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.commission_agence)}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.garantie_prix_vendu)}</td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.garantie_achat)}</td>
-              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#C58AF0" }}>{fmtEUR(d.tca)}</td>
-              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8746B" }}>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "var(--purple)" }}>{fmtEUR(d.tca)}</td>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "var(--negative)" }}>
                 {d.achat_livraison > 0 ? `-${fmtEUR(d.achat_livraison)}` : fmtEUR(d.achat_livraison)}
               </td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.vente_livraison)}</td>
-              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8746B" }}>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "var(--negative)" }}>
                 {d.nettoyage > 0 ? `-${fmtEUR(d.nettoyage)}` : fmtEUR(d.nettoyage)}
               </td>
-              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8746B" }}>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "var(--negative)" }}>
                 -{fmtEUR(d.cash_sentinel)}
               </td>
-              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#E8A33D" }}>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "var(--accent)" }}>
                 {fmtEUR(d.mandat_total)}
               </td>
               <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.total_ht)}</td>
-              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#4FD1C5" }}>
+              <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "var(--positive)" }}>
                 {fmtEUR(d.commission)}
               </td>
               {peutModifier && (
@@ -1399,13 +1476,13 @@ function TableauRetrocommissions({ dossiers, estAdmin }) {
                 <td style={styles.td}>{r.client}</td>
                 <td style={styles.td}>
                   <div>{r.voiture}</div>
-                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "#8B93A1" }}>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--text-muted)" }}>
                     {r.plaque}
                   </div>
                 </td>
                 {estAdmin && <td style={styles.td}>{r.commercial_nom}</td>}
                 <td style={styles.td}>{r.role === "entrant" ? "Entrant" : "Sortant"}</td>
-                <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#4FD1C5" }}>
+                <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "var(--positive)" }}>
                   {fmtEUR(r.commission)}
                 </td>
               </tr>
@@ -1545,7 +1622,7 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
             ))}
           </div>
           {moyenPaiementRequis && !moyenPaiement && (
-            <div style={{ ...styles.tauxAutoAide, color: "#E8746B" }}>
+            <div style={{ ...styles.tauxAutoAide, color: "var(--negative)" }}>
               Obligatoire dès qu'il y a des frais d'intermédiation.
             </div>
           )}
@@ -1574,7 +1651,7 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
 
         <div style={styles.tcaApercu}>
           <span>TCA (18%)</span>
-          <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#C58AF0", fontWeight: 600 }}>
+          <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "var(--purple)", fontWeight: 600 }}>
             {fmtEUR((Math.max(0, (Number(garantiePrixVendu) || 0) - (Number(garantieAchat) || 0)) * 18) / 118)}
           </span>
         </div>
@@ -1617,7 +1694,7 @@ function ModalDossier({ dossier, estAdmin, commerciaux, utilisateur, onFermer, o
 
         <div style={styles.tcaApercu}>
           <span>Mandat total (€)</span>
-          <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#E8A33D", fontWeight: 600 }}>
+          <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "var(--accent)", fontWeight: 600 }}>
             {fmtEUR(mandatTotal)}
           </span>
         </div>
@@ -1990,7 +2067,7 @@ function ChargesFixes({ donnees, entreprises, entrepriseFiltre, onRafraichir, on
                     <td style={styles.td}>{libelleMois(c.mois)}</td>
                     <td style={styles.td}>{c.nom}</td>
                     <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(c.montant)}</td>
-                    <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "#8B93A1" }}>{fmtEUR(c.montant_ht)}</td>
+                    <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "var(--text-muted)" }}>{fmtEUR(c.montant_ht)}</td>
                     <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
                       {modifiable && (
                         <>
@@ -2012,7 +2089,7 @@ function ChargesFixes({ donnees, entreprises, entrepriseFiltre, onRafraichir, on
                 {afficherEntreprise && <td style={styles.td}></td>}
                 <td style={{ ...styles.td, fontWeight: 600 }} colSpan={2}>Total</td>
                 <td style={{ ...styles.td, ...styles.mono, textAlign: "right", fontWeight: 600 }}>{fmtEUR(total)}</td>
-                <td style={{ ...styles.td, ...styles.mono, textAlign: "right", fontWeight: 600, color: "#8B93A1" }}>{fmtEUR(totalHt)}</td>
+                <td style={{ ...styles.td, ...styles.mono, textAlign: "right", fontWeight: 600, color: "var(--text-muted)" }}>{fmtEUR(totalHt)}</td>
                 <td style={styles.td}></td>
               </tr>
             </tfoot>
@@ -2095,7 +2172,7 @@ function ModalChargeFixe({ charge, entreprises, entrepriseIdParDefaut, onFermer,
 
         <div style={styles.tcaApercu}>
           <span>Montant HT (TVA 20% retirée)</span>
-          <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#8B93A1", fontWeight: 600 }}>
+          <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "var(--text-muted)", fontWeight: 600 }}>
             {fmtEUR((Number(montant) || 0) / 1.2)}
           </span>
         </div>
@@ -2350,7 +2427,7 @@ function EquipeEtEntreprises({
                   {c.objectif_ca_ht_brut != null ? `${c.pourcentage_atteinte.toFixed(0)}%` : "—"}
                 </td>
                 <td style={styles.td}>
-                  <span style={{ color: c.actif ? "#4FD1C5" : "#8B93A1" }}>{c.actif ? "Actif" : "Désactivé"}</span>
+                  <span style={{ color: c.actif ? "var(--positive)" : "var(--text-muted)" }}>{c.actif ? "Actif" : "Désactivé"}</span>
                 </td>
                 {estAdmin && (
                   <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
@@ -2667,163 +2744,174 @@ function ModalEntreprise({ entreprise, onFermer, onValider }) {
 // ---------- Styles ----------
 
 const styles = {
-  page: { minHeight: "100vh", background: "#14171C", color: "#E7E5E0", fontFamily: "'Inter', system-ui, sans-serif" },
+  page: { minHeight: "100vh", background: "var(--bg)", color: "var(--text)", fontFamily: "'Inter', system-ui, sans-serif" },
   pageChargement: {
-    minHeight: "100vh", background: "#14171C", color: "#8B93A1", display: "flex",
+    minHeight: "100vh", background: "var(--bg)", color: "var(--text-muted)", display: "flex",
     alignItems: "center", justifyContent: "center", fontFamily: "'Inter', sans-serif", fontSize: 14,
   },
   pageConnexion: {
-    minHeight: "100vh", background: "#14171C", color: "#E7E5E0", display: "flex",
+    minHeight: "100vh", background: "var(--bg)", color: "var(--text)", display: "flex",
     alignItems: "center", justifyContent: "center", fontFamily: "'Inter', system-ui, sans-serif",
   },
-  carteConnexion: { background: "#1C232D", border: "1px solid #2A323D", borderRadius: 16, padding: "36px 32px", width: 340 },
+  carteConnexion: { background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "36px 32px", width: 340 },
   logoConnexion: { display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10 },
   logoImage: { width: "100%", maxWidth: 220, height: "auto", display: "block" },
   logoTexte: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 19, fontWeight: 600, letterSpacing: -0.3 },
-  sousTitreConnexion: { fontSize: 13, color: "#8B93A1", marginBottom: 22 },
-  erreurConnexion: { fontSize: 12.5, color: "#E8746B", marginBottom: 14 },
-  messageConnexion: { fontSize: 12.5, color: "#4FD1C5", marginBottom: 14 },
+  sousTitreConnexion: { fontSize: 13, color: "var(--text-muted)", marginBottom: 22 },
+  erreurConnexion: { fontSize: 12.5, color: "var(--negative)", marginBottom: 14 },
+  messageConnexion: { fontSize: 12.5, color: "var(--positive)", marginBottom: 14 },
   lienMotDePasseOublie: {
-    width: "100%", background: "transparent", border: "none", color: "#8B93A1",
+    width: "100%", background: "transparent", border: "none", color: "var(--text-muted)",
     fontSize: 12.5, cursor: "pointer", marginTop: 14, textDecoration: "underline",
     fontFamily: "'Inter', sans-serif",
   },
   select: {
-    width: "100%", padding: "10px 12px", background: "#14171C", border: "1px solid #2A323D",
-    borderRadius: 8, color: "#E7E5E0", fontSize: 14, marginTop: 6, fontFamily: "'Inter', sans-serif",
+    width: "100%", padding: "10px 12px", background: "var(--bg)", border: "1px solid var(--border)",
+    borderRadius: 8, color: "var(--text)", fontSize: 14, marginTop: 6, fontFamily: "'Inter', sans-serif",
   },
   boutonConnexion: {
-    width: "100%", padding: "12px 0", background: "#E8A33D", border: "none", borderRadius: 8,
-    color: "#14171C", fontSize: 14, fontWeight: 600, cursor: "pointer", marginTop: 4,
+    width: "100%", padding: "12px 0", background: "var(--accent)", border: "none", borderRadius: 8,
+    color: "var(--on-accent)", fontSize: 14, fontWeight: 600, cursor: "pointer", marginTop: 4,
   },
-  ticker: { background: "#0F1216", borderBottom: "1px solid #2A323D", overflow: "hidden", padding: "8px 0", minHeight: 33 },
+  ticker: { background: "var(--surface-sunken)", borderBottom: "1px solid var(--border)", overflow: "hidden", padding: "8px 0", minHeight: 33 },
   tickerContenu: { display: "flex", gap: 40, whiteSpace: "nowrap" },
-  tickerItem: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#8B93A1", paddingRight: 20 },
+  tickerItem: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--text-muted)", paddingRight: 20 },
   tickerPuce: { width: 6, height: 6, borderRadius: "50%", display: "inline-block" },
-  enTete: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 28px", borderBottom: "1px solid #2A323D" },
+  enTete: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 28px", borderBottom: "1px solid var(--border)" },
   enTeteGauche: { display: "flex", alignItems: "center", gap: 8 },
   enTeteLogo: { height: 24, width: "auto", display: "block" },
   enTeteTitre: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 17, fontWeight: 600 },
   enTeteDroite: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", justifyContent: "flex-end" },
-  badgeRole: { fontSize: 11.5, padding: "4px 10px", borderRadius: 20, background: "#4FD1C522", color: "#4FD1C5", fontWeight: 500 },
-  nomUtilisateur: { fontSize: 13.5, color: "#8B93A1" },
-  boutonDeconnexion: { background: "transparent", border: "1px solid #2A323D", borderRadius: 8, padding: 7, color: "#8B93A1", cursor: "pointer", display: "flex" },
+  badgeRole: { fontSize: 11.5, padding: "4px 10px", borderRadius: 20, background: "color-mix(in srgb, var(--positive) 13%, transparent)", color: "var(--positive)", fontWeight: 500 },
+  nomUtilisateur: { fontSize: 13.5, color: "var(--text-muted)" },
+  boutonDeconnexion: { background: "transparent", border: "1px solid var(--border)", borderRadius: 8, padding: 7, color: "var(--text-muted)", cursor: "pointer", display: "flex" },
   boutonActualiser: {
-    display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "1px solid #2A323D",
-    borderRadius: 8, padding: "7px 12px", color: "#8B93A1", cursor: "pointer", fontSize: 13,
+    display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "1px solid var(--border)",
+    borderRadius: 8, padding: "7px 12px", color: "var(--text-muted)", cursor: "pointer", fontSize: 13,
     fontFamily: "'Inter', sans-serif",
   },
   boutonActualiserTexte: {},
   iconeRotation: { animation: "tourner 0.8s linear infinite" },
   corps: { padding: "24px 28px 48px", maxWidth: 1100, margin: "0 auto" },
   bandeauErreur: {
-    display: "flex", justifyContent: "space-between", alignItems: "center", background: "#E8746B1A",
-    border: "1px solid #E8746B55", color: "#E8746B", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 16,
+    display: "flex", justifyContent: "space-between", alignItems: "center", background: "color-mix(in srgb, var(--negative) 10%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--negative) 33%, transparent)", color: "var(--negative)", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 16,
   },
-  fermerErreur: { background: "transparent", border: "none", color: "#E8746B", cursor: "pointer", display: "flex" },
+  fermerErreur: { background: "transparent", border: "none", color: "var(--negative)", cursor: "pointer", display: "flex" },
   ongletsRangee: { display: "flex", gap: 6, marginBottom: 20 },
   onglet: {
-    padding: "8px 16px", borderRadius: 8, border: "1px solid #2A323D", background: "transparent",
-    color: "#8B93A1", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif",
+    padding: "8px 16px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent",
+    color: "var(--text-muted)", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif",
   },
-  ongletActif: { background: "#1C232D", color: "#E7E5E0", borderColor: "#E8A33D" },
+  ongletActif: { background: "var(--surface)", color: "var(--text)", borderColor: "var(--accent)" },
   filtreRangee: { display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" },
   puceFiltre: {
-    display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 20, border: "1px solid #2A323D",
-    background: "transparent", color: "#8B93A1", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif",
+    display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 20, border: "1px solid var(--border)",
+    background: "transparent", color: "var(--text-muted)", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif",
   },
-  puceFiltreActive: { background: "#1C232D", color: "#E7E5E0", borderColor: "#4FD1C5" },
+  puceFiltreActive: { background: "var(--surface)", color: "var(--text)", borderColor: "var(--positive)" },
   puceCouleur: { width: 7, height: 7, borderRadius: "50%", display: "inline-block" },
   selectFiltre: {
-    padding: "7px 12px", borderRadius: 20, border: "1px solid #2A323D", background: "#1C232D",
-    color: "#E7E5E0", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif",
+    padding: "7px 12px", borderRadius: 20, border: "1px solid var(--border)", background: "var(--surface)",
+    color: "var(--text)", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif",
   },
   kpiRangee: { display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 32 },
   rechercheConteneur: {
-    display: "flex", alignItems: "center", gap: 8, background: "#1C232D", border: "1px solid #2A323D",
+    display: "flex", alignItems: "center", gap: 8, background: "var(--surface)", border: "1px solid var(--border)",
     borderRadius: 8, padding: "9px 14px", marginBottom: 14,
   },
   rechercheInput: {
-    flex: 1, background: "transparent", border: "none", outline: "none", color: "#E7E5E0",
+    flex: 1, background: "transparent", border: "none", outline: "none", color: "var(--text)",
     fontSize: 13.5, fontFamily: "'Inter', sans-serif",
   },
-  rechercheEffacer: { background: "transparent", border: "none", color: "#8B93A1", cursor: "pointer", display: "flex" },
+  rechercheEffacer: { background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", display: "flex" },
   kpiCarte: {
-    background: "#1C232D", border: "1px solid #2A323D", borderRadius: 12, padding: "18px 20px",
+    background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: "18px 20px",
     display: "flex", alignItems: "center", gap: 14, position: "relative",
     flex: "1 1 220px", minWidth: 220, transition: "flex-basis 0.15s ease, min-width 0.15s ease",
   },
   kpiCarteDeplacable: { cursor: "grab", userSelect: "none" },
   kpiCarteEnCoursDeplacement: { opacity: 0.4 },
   kpiCarteReduite: { flex: "0 0 auto", minWidth: 0, padding: "10px 30px 10px 12px", gap: 8 },
+  // Les 3 premiers KPI (ordre choisi par glisser-déposer) : grande carte, sans icône.
+  kpiCarteHero: {
+    flexDirection: "column", alignItems: "flex-start", justifyContent: "center", gap: 0,
+    flex: "1 1 260px", minWidth: 260, padding: "22px 24px",
+  },
+  // Les suivants : carte compacte, sans icône, pour une vue plus dense et plus simple.
+  kpiCarteDetail: {
+    flexDirection: "column", alignItems: "flex-start", justifyContent: "center", gap: 0,
+    flex: "1 1 150px", minWidth: 150, padding: "14px 16px",
+  },
   kpiIcone: { width: 38, height: 38, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   kpiIconeReduite: { width: 28, height: 28, borderRadius: 8 },
   kpiValeur: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 20, fontWeight: 600, lineHeight: 1.2 },
+  kpiValeurHero: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 30, fontWeight: 600, lineHeight: 1.2 },
   kpiValeurReduite: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" },
-  kpiLabel: { fontSize: 12.5, color: "#8B93A1", marginTop: 2 },
+  kpiLabel: { fontSize: 12.5, color: "var(--text-muted)", marginBottom: 6 },
   kpiBoutonReduire: {
     position: "absolute", top: 6, right: 6, width: 20, height: 20, borderRadius: 6,
-    border: "none", background: "transparent", color: "#8B93A1", cursor: "pointer",
+    border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer",
     display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
   },
   kpiBoutonReduireCompact: { top: "50%", transform: "translateY(-50%)", right: 6 },
   sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
   sectionTitre: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 16, fontWeight: 600, margin: 0 },
   boutonAjout: {
-    display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "#E8A33D", border: "none",
-    borderRadius: 8, color: "#14171C", fontSize: 13, fontWeight: 600, cursor: "pointer",
+    display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "var(--accent)", border: "none",
+    borderRadius: 8, color: "var(--on-accent)", fontSize: 13, fontWeight: 600, cursor: "pointer",
   },
   boutonSecondaire: {
     display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "transparent",
-    border: "1px solid #2A323D", borderRadius: 8, color: "#E7E5E0", fontSize: 13, fontWeight: 600, cursor: "pointer",
+    border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: "pointer",
     fontFamily: "'Inter', sans-serif",
   },
   cartesEntreprises: { display: "flex", gap: 10, flexWrap: "wrap" },
   carteEntreprise: {
-    display: "flex", alignItems: "center", gap: 8, background: "#1C232D", border: "1px solid #2A323D",
-    borderRadius: 10, padding: "10px 16px", fontSize: 13.5, color: "#E7E5E0", cursor: "pointer",
+    display: "flex", alignItems: "center", gap: 8, background: "var(--surface)", border: "1px solid var(--border)",
+    borderRadius: 10, padding: "10px 16px", fontSize: 13.5, color: "var(--text)", cursor: "pointer",
     fontFamily: "'Inter', sans-serif",
   },
   tableauConteneur: {
-    background: "#1C232D", border: "1px solid #2A323D", borderRadius: 12, overflowX: "auto",
+    background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, overflowX: "auto",
     WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y", overscrollBehaviorX: "contain",
   },
   tableau: { width: "100%", minWidth: 1180, borderCollapse: "collapse" },
   th: {
-    textAlign: "left", fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.4, color: "#8B93A1",
-    padding: "12px 18px", borderBottom: "1px solid #2A323D", fontWeight: 500, whiteSpace: "nowrap",
+    textAlign: "left", fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--text-muted)",
+    padding: "12px 18px", borderBottom: "1px solid var(--border)", fontWeight: 500, whiteSpace: "nowrap",
   },
-  colFigeLivre: { position: "sticky", left: 0, zIndex: 2, background: "#1C232D", minWidth: 56, maxWidth: 56, textAlign: "center" },
-  colFigeDate: { position: "sticky", left: 56, zIndex: 2, background: "#1C232D", minWidth: 112, maxWidth: 112 },
-  colFigeClient: { position: "sticky", left: 168, zIndex: 2, background: "#1C232D", minWidth: 150, maxWidth: 150 },
+  colFigeLivre: { position: "sticky", left: 0, zIndex: 2, background: "var(--surface)", minWidth: 56, maxWidth: 56, textAlign: "center" },
+  colFigeDate: { position: "sticky", left: 56, zIndex: 2, background: "var(--surface)", minWidth: 112, maxWidth: 112 },
+  colFigeClient: { position: "sticky", left: 168, zIndex: 2, background: "var(--surface)", minWidth: 150, maxWidth: 150 },
   colFigeVehicule: {
-    position: "sticky", left: 318, zIndex: 2, background: "#1C232D", minWidth: 170, maxWidth: 170,
+    position: "sticky", left: 318, zIndex: 2, background: "var(--surface)", minWidth: 170, maxWidth: 170,
     boxShadow: "6px 0 8px -4px rgba(0,0,0,0.5)",
   },
-  tr: { borderBottom: "1px solid #232A34" },
+  tr: { borderBottom: "1px solid var(--surface-2)" },
   td: { padding: "13px 18px", fontSize: 13.5, whiteSpace: "nowrap" },
   mono: { fontFamily: "'IBM Plex Mono', monospace" },
   puceEntreprise: { display: "flex", alignItems: "center", gap: 6, fontSize: 13 },
-  videEtat: { padding: "40px 0", textAlign: "center", color: "#8B93A1", fontSize: 13.5 },
+  videEtat: { padding: "40px 0", textAlign: "center", color: "var(--text-muted)", fontSize: 13.5 },
   boutonIcone: {
-    background: "transparent", border: "1px solid #2A323D", borderRadius: 6, padding: 6, color: "#8B93A1",
+    background: "transparent", border: "1px solid var(--border)", borderRadius: 6, padding: 6, color: "var(--text-muted)",
     cursor: "pointer", display: "inline-flex", marginRight: 6,
   },
   modalFond: { position: "fixed", inset: 0, background: "#00000099", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 10, overflowY: "auto", padding: "24px 0" },
-  modalCarte: { background: "#1C232D", border: "1px solid #2A323D", borderRadius: 14, padding: 26, width: 360 },
+  modalCarte: { background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14, padding: 26, width: 360 },
   modalEnTete: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 },
   modalTitre: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 16, margin: 0 },
-  modalFermer: { background: "transparent", border: "none", color: "#8B93A1", cursor: "pointer", display: "flex" },
-  champLabel: { display: "block", fontSize: 12.5, color: "#8B93A1", marginBottom: 16 },
-  tauxAutoAide: { fontSize: 11.5, color: "#8B93A1", marginTop: -10, marginBottom: 16 },
-  puceAuto: { fontSize: 10.5, color: "#4FD1C5", fontFamily: "'Inter', sans-serif" },
+  modalFermer: { background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", display: "flex" },
+  champLabel: { display: "block", fontSize: 12.5, color: "var(--text-muted)", marginBottom: 16 },
+  tauxAutoAide: { fontSize: 11.5, color: "var(--text-muted)", marginTop: -10, marginBottom: 16 },
+  puceAuto: { fontSize: 10.5, color: "var(--positive)", fontFamily: "'Inter', sans-serif" },
   tcaApercu: {
-    display: "flex", justifyContent: "space-between", alignItems: "center", background: "#14171C",
-    border: "1px solid #2A323D", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: "#8B93A1", marginBottom: 16,
+    display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)",
+    border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: "var(--text-muted)", marginBottom: 16,
   },
   input: {
-    width: "100%", padding: "10px 12px", background: "#14171C", border: "1px solid #2A323D", borderRadius: 8,
-    color: "#E7E5E0", fontSize: 14, marginTop: 6, fontFamily: "'Inter', sans-serif", boxSizing: "border-box",
+    width: "100%", padding: "10px 12px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8,
+    color: "var(--text)", fontSize: 14, marginTop: 6, fontFamily: "'Inter', sans-serif", boxSizing: "border-box",
   },
 };
 

@@ -928,7 +928,7 @@ def dossiers_retrocommission_mensuel(db, commercial_id, mois):
     (entrant ou sortant seul) ce mois-ci. Compte pour sa valeur pleine, comme un
     dossier propre — voir ANNEXE 8."""
     return db.execute(
-        """SELECT d.garantie_achat, d.garantie_prix_vendu, d.mandat_total, d.nettoyage, d.achat_livraison
+        """SELECT d.date, d.garantie_achat, d.garantie_prix_vendu, d.mandat_total, d.nettoyage, d.achat_livraison
            FROM retrocommissions r JOIN dossiers d ON d.id = r.dossier_id
            WHERE r.commercial_id = ? AND substr(d.date, 1, 7) = ?""",
         (commercial_id, mois),
@@ -937,7 +937,7 @@ def dossiers_retrocommission_mensuel(db, commercial_id, mois):
 
 def ca_ht_net_mensuel(db, commercial_id, mois):
     rows = db.execute(
-        "SELECT garantie_achat, garantie_prix_vendu, mandat_total, nettoyage, achat_livraison FROM dossiers "
+        "SELECT date, garantie_achat, garantie_prix_vendu, mandat_total, nettoyage, achat_livraison FROM dossiers "
         "WHERE commercial_id = ? AND substr(date, 1, 7) = ?",
         (commercial_id, mois),
     ).fetchall()

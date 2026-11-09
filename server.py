@@ -919,7 +919,7 @@ TAUX_SORTANT_HAUT = 0.225
 def total_ht_ligne(row):
     tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 18 / 118
     return (
-        row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL - row["nettoyage"] - row["achat_livraison"]
+        row["mandat_total"] - row["garantie_achat"] - tca - cash_sentinel_pour(row["date"]) - row["nettoyage"] - row["achat_livraison"]
     ) / 1.2
 
 
@@ -1232,12 +1232,21 @@ def create_animateur():
 # ---------- Routes: dossiers ----------
 
 CASH_SENTINEL = 43.20
+# Nouveau tarif Cash Sentinel, applicable aux dossiers datés à partir du 01/11/2026 ;
+# les dossiers antérieurs gardent l'ancien tarif (CASH_SENTINEL).
+CASH_SENTINEL_NOUVEAU = 41.40
+CASH_SENTINEL_DATE_CHANGEMENT = "2026-11-01"
+
+
+def cash_sentinel_pour(date):
+    """Coût Cash Sentinel applicable à un dossier selon sa date (AAAA-MM-JJ)."""
+    return CASH_SENTINEL_NOUVEAU if date >= CASH_SENTINEL_DATE_CHANGEMENT else CASH_SENTINEL
 
 
 def dossier_dict(row, com, ent, db):
     tca = max(0, row["garantie_prix_vendu"] - row["garantie_achat"]) * 18 / 118
     total_ht = (
-        row["mandat_total"] - row["garantie_achat"] - tca - CASH_SENTINEL - row["nettoyage"] - row["achat_livraison"]
+        row["mandat_total"] - row["garantie_achat"] - tca - cash_sentinel_pour(row["date"]) - row["nettoyage"] - row["achat_livraison"]
     ) / 1.2
     mois = row["date"][:7]
     role_commercial = row["role_commercial"]
@@ -1282,7 +1291,7 @@ def dossier_dict(row, com, ent, db):
         "moyen_paiement": row["moyen_paiement"],
         "livre": bool(row["livre"]),
         "tca": tca,
-        "cash_sentinel": CASH_SENTINEL,
+        "cash_sentinel": cash_sentinel_pour(row["date"]),
         "total_ht": total_ht,
         "role_commercial": role_commercial,
         "retrocommission": retrocommission,
@@ -1522,6 +1531,7 @@ def delete_dossier(dossier_id):
     if row is None:
         return jsonify(error="Dossier introuvable"), 404
     db.execute("DELETE FROM retrocommissions WHERE dossier_id = ?", (dossier_id,))
+    db.execute("DELETE FROM avis_google WHERE dossier_id = ?", (dossier_id,))
     db.execute("DELETE FROM dossiers WHERE id = ?", (dossier_id,))
     db.commit()
     return jsonify(ok=True)

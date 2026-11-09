@@ -1999,6 +1999,23 @@ def get_refacturation():
     return jsonify(mois=mois, tarifs=tarifs, lignes=lignes)
 
 
+@app.get("/api/refacturation/historique")
+@login_required
+def historique_refacturation():
+    """Total refacturé par mois et par commercial (pour le tableau de bord : les
+    commissions dues d'un mois passé se calculent net de la refacturation de ce mois)."""
+    db = get_db()
+    tarifs = get_tarifs_refacturation(db)
+    if peut_tout_voir(g.user):
+        rows = db.execute("SELECT * FROM refacturations").fetchall()
+    else:
+        rows = db.execute("SELECT * FROM refacturations WHERE commercial_id = ?", (g.user["commercial_id"],)).fetchall()
+    resultat = {}
+    for r in rows:
+        resultat.setdefault(r["mois"], {})[str(r["commercial_id"])] = refacturation_ligne(r, tarifs)["total"]
+    return jsonify(resultat)
+
+
 @app.put("/api/refacturation/nombre")
 @ecriture_requise
 def update_refacturation_nombre():

@@ -136,6 +136,7 @@ export default function App() {
   const [dossiers, setDossiers] = useState([]);
   const [dossiersTous, setDossiersTous] = useState([]);
   const [refacturation, setRefacturation] = useState(null);
+  const [refacturationHisto, setRefacturationHisto] = useState({});
   const [chargesFixes, setChargesFixes] = useState([]);
   const [retrocommissions, setRetrocommissions] = useState([]);
   const [avis, setAvis] = useState([]);
@@ -151,7 +152,7 @@ export default function App() {
   const [moisFiltre, setMoisFiltre] = useState(moisCourant);
   const [rechercheTexte, setRechercheTexte] = useState("");
   const [vue, setVue] = useState(() =>
-    new URLSearchParams(window.location.search).has("google") ? "equipe" : "dossiers"
+    new URLSearchParams(window.location.search).has("google") ? "equipe" : "tableau"
   );
   const [modalDossier, setModalDossier] = useState(null); // null | {} | dossier existant
   const [modalCommercial, setModalCommercial] = useState(null);
@@ -244,8 +245,9 @@ export default function App() {
   }, []);
 
   const chargerRefacturation = useCallback(async () => {
-    const data = await api("/api/refacturation");
+    const [data, histo] = await Promise.all([api("/api/refacturation"), api("/api/refacturation/historique")]);
     setRefacturation(data);
+    setRefacturationHisto(histo);
   }, []);
 
   const chargerChargesFixes = useCallback(async () => {
@@ -303,10 +305,11 @@ export default function App() {
     setDossiers([]);
     setDossiersTous([]);
     setRefacturation(null);
+    setRefacturationHisto({});
     setChargesFixes([]);
     setRetrocommissions([]);
     setAvis([]);
-    setVue("dossiers");
+    setVue("tableau");
   };
 
   const rafraichir = async () => {
@@ -446,6 +449,12 @@ export default function App() {
 
         <div style={styles.ongletsRangee}>
           <button
+            style={{ ...styles.onglet, ...(vue === "tableau" ? styles.ongletActif : {}) }}
+            onClick={() => setVue("tableau")}
+          >
+            Tableau de bord
+          </button>
+          <button
             style={{ ...styles.onglet, ...(vue === "dossiers" ? styles.ongletActif : {}) }}
             onClick={() => setVue("dossiers")}
           >
@@ -480,6 +489,22 @@ export default function App() {
             </button>
           )}
         </div>
+
+        {vue === "tableau" && (
+          <TableauDeBord
+            utilisateur={utilisateur}
+            estAdmin={estAdmin}
+            estAdminPrincipal={estAdminPrincipal}
+            peutToutVoir={peutToutVoir}
+            entreprises={entreprises}
+            commerciaux={commerciaux}
+            dossiersTous={dossiersTous}
+            chargesFixes={chargesFixes}
+            refacturationHisto={refacturationHisto}
+            avis={avis}
+            onVoirDossiers={() => setVue("dossiers")}
+          />
+        )}
 
         {vue === "dossiers" && (
           <>
@@ -2458,6 +2483,425 @@ function EquipeEtEntreprises({
 
       {estAdmin && <ComptesAnimateur />}
       {estAdminPrincipal && <ConnexionsGoogle />}
+    </div>
+  );
+}
+
+// ---------- Tableau de bord (graphiques) ----------
+
+function decalerMois(mois, delta) {
+  const [a, m] = mois.split("-").map(Number);
+  const d = new Date(a, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function libelleMoisCourt(mois) {
+  const [a, m] = mois.split("-").map(Number);
+  return new Date(a, m - 1, 1).toLocaleDateString("fr-FR", { month: "short" });
+}
+
+function variationPourcent(actuel, precedent) {
+  if (!precedent) return null;
+  return ((actuel - precedent) / Math.abs(precedent)) * 100;
+}
+
+function plafondLisible(valeur) {
+  if (valeur <= 0) return 1;
+  const puissance = Math.pow(10, Math.floor(Math.log10(valeur)));
+  const f = valeur / puissance;
+  const n = f <= 1.2 ? 1.2 : f <= 2 ? 2 : f <= 4 ? 4 : f <= 6 ? 6 : f <= 8 ? 8 : 10;
+  return n * puissance;
+}
+
+const fmtMilliers = (v) => (v / 1000).toLocaleString("fr-FR", { maximumFractionDigits: 1 });
+
+function Sparkline({ valeurs, couleur }) {
+  const min = Math.min(...valeurs);
+  const max = Math.max(...valeurs);
+  const ecart = max - min || 1;
+  const points = valeurs
+    .map((v, i) => `${(2 + (i * 92) / (valeurs.length - 1)).toFixed(1)},${(28 - ((v - min) / ecart) * 24).toFixed(1)}`)
+    .join(" ");
+  return (
+    <svg width="96" height="32" viewBox="0 0 96 32" aria-hidden="true">
+      <polyline points={points} fill="none" style={{ stroke: couleur }} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function GraphiqueEvolution({ serie, moisListe, avecBenefice }) {
+  // Sur téléphone on dessine sur une largeur réduite pour que les textes restent lisibles.
+  const [etroit, setEtroit] = useState(window.innerWidth < 640);
+  useEffect(() => {
+    const surRedim = () => setEtroit(window.innerWidth < 640);
+    window.addEventListener("resize", surRedim);
+    return () => window.removeEventListener("resize", surRedim);
+  }, []);
+  const LARGEUR = etroit ? 340 : 760;
+  const L = etroit ? 34 : 48, R = LARGEUR - 10, HAUT = 20, BAS = 190;
+  const maxPositif = Math.max(...serie.map((s) => s.caHtNet), ...(avecBenefice ? serie.map((s) => s.benefice) : [0]), 0);
+  const minNegatif = avecBenefice ? Math.min(...serie.map((s) => s.benefice), 0) : 0;
+  const haut = plafondLisible(maxPositif);
+  const bas = minNegatif < 0 ? -plafondLisible(-minNegatif) : 0;
+  const y = (v) => HAUT + ((haut - v) / (haut - bas)) * (BAS - HAUT);
+  const pas = (R - L) / serie.length;
+  const centre = (i) => L + pas * (i + 0.5);
+  const graduations = [0, 1, 2, 3, 4].map((k) => bas + ((haut - bas) * k) / 4);
+  const ligne = serie.map((s, i) => `${centre(i).toFixed(1)},${y(s.benefice).toFixed(1)}`).join(" ");
+  const resume = serie.map((s, i) => `${libelleMoisCourt(moisListe[i])} : CA HT net ${Math.round(s.caHtNet)} euros`).join(", ");
+  return (
+    <svg width="100%" viewBox={`0 0 ${LARGEUR} 230`} role="img" aria-label={`Évolution sur 6 mois. ${resume}`} style={{ marginTop: 14 }}>
+      {graduations.map((g, i) => (
+        <g key={i}>
+          <line x1={L} x2={R} y1={y(g)} y2={y(g)} style={{ stroke: "var(--border)" }} strokeWidth="1" />
+          <text x={L - 8} y={y(g) + 4} textAnchor="end" style={{ fill: "var(--text-muted)", font: "500 11px 'Inter', sans-serif" }}>
+            {fmtMilliers(g)}
+          </text>
+        </g>
+      ))}
+      {serie.map((s, i) => {
+        const hauteur = Math.abs(y(Math.max(s.caHtNet, 0)) - y(Math.min(s.caHtNet, 0)));
+        return (
+          <rect
+            key={i}
+            x={centre(i) - Math.min(22, pas * 0.32)}
+            y={y(Math.max(s.caHtNet, 0))}
+            width={Math.min(44, pas * 0.64)}
+            height={Math.max(hauteur, 0)}
+            rx="6"
+            style={{ fill: "var(--accent)", opacity: i === serie.length - 1 ? 0.55 : 1 }}
+          />
+        );
+      })}
+      {avecBenefice && (
+        <>
+          <polyline points={ligne} fill="none" style={{ stroke: "var(--positive)" }} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+          {serie.map((s, i) => (
+            <circle key={i} cx={centre(i)} cy={y(s.benefice)} r="5" style={{ fill: "var(--surface)", stroke: "var(--positive)" }} strokeWidth="2.5" />
+          ))}
+        </>
+      )}
+      {moisListe.map((m, i) => (
+        <text key={m} x={centre(i)} y="214" textAnchor="middle" style={{ fill: "var(--text-muted)", font: "500 12px 'Inter', sans-serif" }}>
+          {libelleMoisCourt(m)}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
+function Anneau({ parts, centreTexte, centreLibelle }) {
+  const R = 60;
+  const circ = 2 * Math.PI * R;
+  const total = parts.reduce((s, p) => s + p.valeur, 0);
+  let cumul = 0;
+  return (
+    <svg width="170" height="170" viewBox="0 0 170 170" role="img" aria-label={parts.map((p) => `${p.nom} ${Math.round((p.valeur / total) * 100)} %`).join(", ")}>
+      <g transform="rotate(-90 85 85)" fill="none" strokeWidth="24">
+        {parts.map((p) => {
+          const longueur = (p.valeur / total) * circ;
+          const el = <circle key={p.nom} cx="85" cy="85" r={R} style={{ stroke: p.couleur }} strokeDasharray={`${longueur} ${circ}`} strokeDashoffset={-cumul} />;
+          cumul += longueur;
+          return el;
+        })}
+      </g>
+      <text x="85" y="82" textAnchor="middle" style={{ fill: "var(--text)", font: "600 13px 'IBM Plex Mono', monospace" }}>{centreTexte}</text>
+      <text x="85" y="102" textAnchor="middle" style={{ fill: "var(--text-muted)", font: "500 11.5px 'Inter', sans-serif" }}>{centreLibelle}</text>
+    </svg>
+  );
+}
+
+function Jauge({ pourcentage }) {
+  const longueur = Math.min(Math.max(pourcentage, 0), 100) * 2.513;
+  return (
+    <svg width="210" height="128" viewBox="0 0 200 118" role="img" aria-label={`Objectif atteint à ${Math.round(pourcentage)} %`}>
+      <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" style={{ stroke: "var(--surface-2)" }} strokeWidth="18" strokeLinecap="round" />
+      <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" style={{ stroke: "var(--accent)" }} strokeWidth="18" strokeLinecap="round" strokeDasharray={`${longueur} 251.3`} />
+      <text x="100" y="92" textAnchor="middle" style={{ fill: "var(--text)", font: "600 30px 'IBM Plex Mono', monospace" }}>{Math.round(pourcentage)} %</text>
+    </svg>
+  );
+}
+
+function TableauDeBord({ utilisateur, estAdmin, estAdminPrincipal, peutToutVoir, entreprises, commerciaux, dossiersTous, chargesFixes, refacturationHisto, avis, onVoirDossiers }) {
+  const maintenant = new Date();
+  const moisActuelReel = `${maintenant.getFullYear()}-${String(maintenant.getMonth() + 1).padStart(2, "0")}`;
+  const [mois, setMois] = useState(moisActuelReel);
+  const [entrepriseId, setEntrepriseId] = useState("toutes");
+
+  const estCommercial = utilisateur.role === "commercial";
+  const entrepriseDe = Object.fromEntries(commerciaux.map((c) => [c.id, c.entreprise_id]));
+  const dansPerimetre = (idEntreprise) => entrepriseId === "toutes" || String(idEntreprise) === String(entrepriseId);
+
+  const dossiersDuMois = (m) => dossiersTous.filter((d) => d.date.slice(0, 7) === m && dansPerimetre(d.entreprise_id));
+  const refacturationDuMois = (m) =>
+    Object.entries(refacturationHisto[m] || {})
+      .filter(([commercialId]) => dansPerimetre(entrepriseDe[commercialId]))
+      .reduce((s, [, v]) => s + v, 0);
+  const chargesDuMois = (m) =>
+    chargesFixes.filter((c) => c.mois === m && dansPerimetre(c.entreprise_id)).reduce((s, c) => s + c.montant_ht, 0);
+
+  // Mêmes formules que les KPI de l'onglet Dossiers : commissions dues = commissions
+  // des dossiers moins la refacturation du mois ; bénéfice = CA HT net - commissions
+  // dues - charges fixes HT.
+  const chiffres = (m) => {
+    const ds = dossiersDuMois(m);
+    const caHtNet = ds.reduce((s, d) => s + d.total_ht, 0);
+    const commissions = ds.reduce((s, d) => s + d.commission, 0) - refacturationDuMois(m);
+    return {
+      caTtc: ds.reduce((s, d) => s + d.mandat_total, 0),
+      caHtBrut: ds.reduce((s, d) => s + d.mandat_total / 1.2, 0),
+      caHtNet,
+      commissions,
+      benefice: caHtNet - commissions - chargesDuMois(m),
+      ventes: ds.length,
+    };
+  };
+
+  const moisListe = [-5, -4, -3, -2, -1, 0].map((k) => decalerMois(mois, k));
+  const serie = moisListe.map(chiffres);
+  const actuel = serie[5];
+  const precedent = serie[4];
+  const ds = dossiersDuMois(mois);
+
+  const tuiles = [
+    { cle: "caTtc", label: "CA TTC", format: fmtEUR },
+    { cle: "caHtBrut", label: "CA HT brut", format: fmtEUR },
+    { cle: "commissions", label: estCommercial ? "Mes commissions" : "Commissions dues", format: fmtEUR },
+    estAdminPrincipal
+      ? { cle: "benefice", label: "Bénéfice", format: fmtEUR, vert: true }
+      : { cle: "ventes", label: "Voitures vendues", format: (v) => String(v) },
+  ];
+
+  // Objectif mensuel : celui du commercial, de l'entreprise filtrée, ou la somme des
+  // entreprises qui en ont un (admin, vue globale).
+  let objectif = null;
+  let realise = actuel.caHtBrut;
+  if (estCommercial) {
+    objectif = commerciaux.find((c) => c.id === utilisateur.commercial_id)?.objectif_ca_ht_brut ?? null;
+  } else if (estAdmin && entrepriseId !== "toutes") {
+    objectif = entreprises.find((e) => String(e.id) === String(entrepriseId))?.objectif_ca_ht_brut ?? null;
+  } else if (estAdmin) {
+    const avecObjectif = entreprises.filter((e) => e.objectif_ca_ht_brut != null);
+    if (avecObjectif.length > 0) {
+      objectif = avecObjectif.reduce((s, e) => s + e.objectif_ca_ht_brut, 0);
+      const ids = new Set(avecObjectif.map((e) => e.id));
+      realise = ds.filter((d) => ids.has(d.entreprise_id)).reduce((s, d) => s + d.mandat_total / 1.2, 0);
+    }
+  }
+
+  const repartition = entreprises
+    .map((e) => ({ nom: e.nom, couleur: e.couleur, valeur: Math.max(0, ds.filter((d) => d.entreprise_id === e.id).reduce((s, d) => s + d.total_ht, 0)) }))
+    .filter((p) => p.valeur > 0);
+  const totalRepartition = repartition.reduce((s, p) => s + p.valeur, 0);
+
+  const classement = estCommercial
+    ? [...ds].sort((a, b) => b.total_ht - a.total_ht).slice(0, 5).map((d) => ({ nom: `${d.client} — ${d.voiture}`, valeur: d.total_ht }))
+    : Object.values(
+        ds.reduce((acc, d) => {
+          acc[d.commercial_id] = acc[d.commercial_id] || { nom: d.commercial_nom, valeur: 0 };
+          acc[d.commercial_id].valeur += d.total_ht;
+          return acc;
+        }, {})
+      ).sort((a, b) => b.valeur - a.valeur).slice(0, 5);
+  const maxClassement = Math.max(...classement.map((c) => c.valeur), 1);
+
+  const livrees = ds.filter((d) => d.livre).length;
+  const avisDuMois = avis.filter((a) => a.date.slice(0, 7) === mois && dansPerimetre(a.entreprise_id)).length;
+
+  const carte = { background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16 };
+  const titre = { fontFamily: "'Space Grotesk', sans-serif", fontSize: 15, fontWeight: 600 };
+  const sous = { fontSize: 12.5, color: "var(--text-muted)", marginTop: 6 };
+  const piste = { height: 8, borderRadius: 4, background: "var(--surface-2)", overflow: "hidden" };
+  const libelle = (m) => { const t = libelleMois(m); return t.charAt(0).toUpperCase() + t.slice(1); };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 14 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button style={{ ...styles.boutonDeconnexion, padding: "6px 13px", fontSize: 18, lineHeight: 1 }} onClick={() => setMois(decalerMois(mois, -1))} title="Mois précédent" aria-label="Mois précédent">‹</button>
+            <h2 style={{ ...styles.sectionTitre, fontSize: 26, minWidth: 190, textAlign: "center" }}>{libelle(mois)}</h2>
+            <button
+              style={{ ...styles.boutonDeconnexion, padding: "6px 13px", fontSize: 18, lineHeight: 1, opacity: mois >= moisActuelReel ? 0.4 : 1 }}
+              disabled={mois >= moisActuelReel}
+              onClick={() => setMois(decalerMois(mois, 1))}
+              title="Mois suivant"
+              aria-label="Mois suivant"
+            >›</button>
+          </div>
+          {estCommercial && <div style={{ ...sous, marginLeft: 40 }}>Vos chiffres personnels</div>}
+        </div>
+        {peutToutVoir && (
+          <FiltreEntreprises
+            entreprises={entreprises}
+            entrepriseFiltre={entrepriseId}
+            setEntrepriseFiltre={setEntrepriseId}
+          />
+        )}
+      </div>
+
+      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 16 }}>
+        {tuiles.map((t) => {
+          const v = variationPourcent(actuel[t.cle], precedent[t.cle]);
+          return (
+            <div key={t.cle} style={{ ...carte, padding: "20px 22px", ...(t.vert ? { borderColor: "var(--positive)" } : {}) }}>
+              <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{t.label}</div>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 26, fontWeight: 600, marginTop: 10, lineHeight: 1, color: t.vert ? "var(--positive)" : "var(--text)" }}>
+                {t.format(actuel[t.cle])}
+              </div>
+              <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginTop: 14, gap: 8 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: v == null || Math.abs(v) < 1 ? "var(--text-muted)" : v > 0 ? "var(--positive)" : "var(--negative)" }}>
+                  {v == null ? "—" : Math.abs(v) < 1 ? "● stable" : `${v > 0 ? "▲" : "▼"} ${Math.abs(v).toFixed(0)} % vs ${libelleMoisCourt(moisListe[4])}`}
+                </span>
+                <Sparkline valeurs={serie.map((s) => s[t.cle])} couleur={t.vert ? "var(--positive)" : "var(--accent)"} />
+              </div>
+            </div>
+          );
+        })}
+      </section>
+
+      <section style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+        <div style={{ ...carte, padding: "24px 26px", flex: "2 1 460px", minWidth: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <div style={titre}>Évolution sur 6 mois</div>
+              <div style={sous}>{estAdminPrincipal ? "CA HT net et bénéfice" : "CA HT net"}, en milliers d'euros</div>
+            </div>
+            <div style={{ display: "flex", gap: 16, fontSize: 12.5, color: "var(--text-muted)" }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 7 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: "var(--accent)" }} />CA HT net</span>
+              {estAdminPrincipal && <span style={{ display: "flex", alignItems: "center", gap: 7 }}><span style={{ width: 14, height: 3, borderRadius: 2, background: "var(--positive)" }} />Bénéfice</span>}
+            </div>
+          </div>
+          <GraphiqueEvolution serie={serie} moisListe={moisListe} avecBenefice={estAdminPrincipal} />
+        </div>
+
+        {peutToutVoir && entrepriseId === "toutes" && (
+          <div style={{ ...carte, padding: "24px 26px", flex: "1 1 260px", display: "flex", flexDirection: "column" }}>
+            <div style={titre}>Par entreprise</div>
+            <div style={sous}>Part du CA HT net du mois</div>
+            {totalRepartition > 0 ? (
+              <>
+                <div style={{ display: "flex", justifyContent: "center", margin: "18px 0 14px" }}>
+                  <Anneau parts={repartition} centreTexte={fmtEUR(totalRepartition)} centreLibelle="CA HT net" />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13.5 }}>
+                  {repartition.map((p) => (
+                    <div key={p.nom} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 9 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: p.couleur }} />{p.nom}</span>
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{Math.round((p.valeur / totalRepartition) * 100)} %</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div style={styles.videEtat}>Aucune vente ce mois-ci.</div>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+        <div style={{ ...carte, padding: "24px 26px", flex: "1 1 240px", display: "flex", flexDirection: "column", alignItems: "center" }}>
+          <div style={{ ...titre, alignSelf: "flex-start" }}>Objectif du mois</div>
+          {objectif ? (
+            <>
+              <div style={{ ...sous, alignSelf: "flex-start" }}>CA HT brut visé : {fmtEUR(objectif)}</div>
+              <div style={{ marginTop: 16 }}><Jauge pourcentage={(realise / objectif) * 100} /></div>
+              <div style={{ ...sous, marginTop: 8 }}>
+                {fmtEUR(realise)} réalisés{realise < objectif ? ` · reste ${fmtEUR(objectif - realise)}` : " · objectif atteint"}
+              </div>
+            </>
+          ) : (
+            <div style={{ ...styles.videEtat, padding: "30px 0" }}>Aucun objectif défini.</div>
+          )}
+        </div>
+
+        <div style={{ ...carte, padding: "24px 26px", flex: "1.3 1 300px", minWidth: 0 }}>
+          <div style={titre}>{estCommercial ? "Mes meilleures ventes" : "Classement des commerciaux"}</div>
+          <div style={sous}>CA HT net du mois</div>
+          {classement.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 20 }}>
+              {classement.map((c, i) => (
+                <div key={`${c.nom}-${i}`}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13.5, fontWeight: 500, marginBottom: 8 }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.nom}</span>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, whiteSpace: "nowrap" }}>{fmtEUR(c.valeur)}</span>
+                  </div>
+                  <div style={piste}><div style={{ height: "100%", borderRadius: 4, background: "var(--accent)", width: `${Math.max(2, (Math.max(c.valeur, 0) / maxClassement) * 100)}%` }} /></div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={styles.videEtat}>Aucune vente ce mois-ci.</div>
+          )}
+        </div>
+
+        <div style={{ ...carte, padding: "24px 26px", flex: "1 1 260px", display: "flex", flexDirection: "column", gap: 24 }}>
+          <div>
+            <div style={titre}>Livraisons</div>
+            <div style={sous}>{livrees} livrée{livrees > 1 ? "s" : ""} sur {ds.length} vente{ds.length > 1 ? "s" : ""}</div>
+            <div style={{ ...piste, height: 12, borderRadius: 6, marginTop: 14 }}>
+              <div style={{ height: "100%", borderRadius: 6, background: "var(--positive)", width: `${ds.length ? (livrees / ds.length) * 100 : 0}%` }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, fontSize: 12.5, color: "var(--text-muted)" }}>
+              <span>{ds.length ? Math.round((livrees / ds.length) * 100) : 0} % livrées</span>
+              <span>{ds.length - livrees} à livrer</span>
+            </div>
+          </div>
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: 20 }}>
+            <div style={titre}>Avis Google</div>
+            <div style={sous}>{avisDuMois} avis attribué{avisDuMois > 1 ? "s" : ""} pour {ds.length} vente{ds.length > 1 ? "s" : ""}</div>
+            <div style={{ ...piste, marginTop: 12 }}>
+              <div style={{ height: "100%", borderRadius: 4, background: "var(--accent)", width: `${ds.length ? Math.min(100, (avisDuMois / ds.length) * 100) : 0}%` }} />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section style={{ ...carte, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 22px", borderBottom: "1px solid var(--border)", gap: 10, flexWrap: "wrap" }}>
+          <span style={titre}>Derniers dossiers du mois</span>
+          <button style={styles.boutonSecondaire} onClick={onVoirDossiers}>Voir tous les dossiers</button>
+        </div>
+        {ds.length === 0 ? (
+          <div style={styles.videEtat}>Aucun dossier ce mois-ci.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ ...styles.tableau, minWidth: "auto" }}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Date</th>
+                  <th style={styles.th}>Client</th>
+                  <th style={styles.th}>Véhicule</th>
+                  {!estCommercial && <th style={styles.th}>Commercial</th>}
+                  <th style={styles.th}>Livraison</th>
+                  <th style={{ ...styles.th, textAlign: "right" }}>Mandat TTC</th>
+                  <th style={{ ...styles.th, textAlign: "right" }}>Commission</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...ds].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 5).map((d) => (
+                  <tr key={d.id} style={styles.tr}>
+                    <td style={styles.td}>{new Date(d.date).toLocaleDateString("fr-FR")}</td>
+                    <td style={{ ...styles.td, fontWeight: 500 }}>{d.client}</td>
+                    <td style={styles.td}>{d.voiture}</td>
+                    {!estCommercial && <td style={styles.td}>{d.commercial_nom}</td>}
+                    <td style={styles.td}>
+                      <span style={{
+                        fontSize: 11.5, fontWeight: 600, padding: "5px 10px", borderRadius: 20,
+                        background: d.livre ? "color-mix(in srgb, var(--positive) 16%, transparent)" : "color-mix(in srgb, var(--accent) 16%, transparent)",
+                        color: d.livre ? "var(--positive)" : "var(--text)",
+                      }}>{d.livre ? "Livré" : "À livrer"}</span>
+                    </td>
+                    <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>{fmtEUR(d.mandat_total)}</td>
+                    <td style={{ ...styles.td, ...styles.mono, textAlign: "right", color: "var(--positive)" }}>{fmtEUR(d.commission)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

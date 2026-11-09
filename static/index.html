@@ -33,6 +33,7 @@
     --purple: #C58AF0;
     --blue: #5B8DEF;
     --surface-sunken: #0F1216;
+    --row-border: #232A34;
   }
   :root[data-theme="light"] {
     --bg: #F5F4F0;
@@ -49,11 +50,16 @@
     --purple: #8447C4;
     --blue: #3457B2;
     --surface-sunken: #EDEBE5;
+    --row-border: rgba(20,23,28,0.14);
   }
   html, body { margin: 0; padding: 0; background: var(--bg); }
   /* Le logo est un PNG blanc fixe : en thème clair, on l'inverse pour qu'il reste visible
      sur fond clair (sans avoir à fournir un second fichier image). */
-  :root[data-theme="light"] .hse-logo { filter: invert(1); }
+  @media (hover: hover) {
+    .kpi-carte-pleine .kpi-reduire { opacity: 0; transition: opacity 0.15s; }
+    .kpi-carte-pleine:hover .kpi-reduire, .kpi-carte-pleine .kpi-reduire:focus-visible { opacity: 1; }
+  }
+  :root[data-theme="light"] .hse-logo { filter: invert(1) hue-rotate(180deg); }
   @keyframes tourner { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>
 <script>
@@ -1249,6 +1255,7 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
         return (
           <div
             key={k.id}
+            className={estReduit ? undefined : "kpi-carte-pleine"}
             style={{
               ...styles.kpiCarte,
               ...(estReduit ? styles.kpiCarteReduite : estHero ? styles.kpiCarteHero : styles.kpiCarteDetail),
@@ -1289,6 +1296,7 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
             {onBasculerReduction && (
               <button
                 type="button"
+                className="kpi-reduire"
                 title={estReduit ? "Agrandir ce KPI" : "Réduire ce KPI"}
                 style={{ ...styles.kpiBoutonReduire, ...(estReduit ? styles.kpiBoutonReduireCompact : {}) }}
                 onMouseDown={(e) => e.stopPropagation()}
@@ -2798,7 +2806,7 @@ const styles = {
     border: "1px solid color-mix(in srgb, var(--negative) 33%, transparent)", color: "var(--negative)", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 16,
   },
   fermerErreur: { background: "transparent", border: "none", color: "var(--negative)", cursor: "pointer", display: "flex" },
-  ongletsRangee: { display: "flex", gap: 6, marginBottom: 20 },
+  ongletsRangee: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 20 },
   onglet: {
     padding: "8px 16px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent",
     color: "var(--text-muted)", fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif",
@@ -2846,7 +2854,7 @@ const styles = {
   kpiIcone: { width: 38, height: 38, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   kpiIconeReduite: { width: 28, height: 28, borderRadius: 8 },
   kpiValeur: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 20, fontWeight: 600, lineHeight: 1.2 },
-  kpiValeurHero: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 30, fontWeight: 600, lineHeight: 1.2 },
+  kpiValeurHero: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 28, fontWeight: 600, lineHeight: 1.2 },
   kpiValeurReduite: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" },
   kpiLabel: { fontSize: 12.5, color: "var(--text-muted)", marginBottom: 6 },
   kpiBoutonReduire: {
@@ -2855,7 +2863,7 @@ const styles = {
     display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
   },
   kpiBoutonReduireCompact: { top: "50%", transform: "translateY(-50%)", right: 6 },
-  sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 },
   sectionTitre: { fontFamily: "'Space Grotesk', sans-serif", fontSize: 16, fontWeight: 600, margin: 0 },
   boutonAjout: {
     display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "var(--accent)", border: "none",
@@ -2888,7 +2896,7 @@ const styles = {
     position: "sticky", left: 318, zIndex: 2, background: "var(--surface)", minWidth: 170, maxWidth: 170,
     boxShadow: "6px 0 8px -4px rgba(0,0,0,0.5)",
   },
-  tr: { borderBottom: "1px solid var(--surface-2)" },
+  tr: { borderBottom: "1px solid var(--row-border)" },
   td: { padding: "13px 18px", fontSize: 13.5, whiteSpace: "nowrap" },
   mono: { fontFamily: "'IBM Plex Mono', monospace" },
   puceEntreprise: { display: "flex", alignItems: "center", gap: 6, fontSize: 13 },

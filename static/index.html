@@ -150,7 +150,9 @@ export default function App() {
   const [anneeFiltre, setAnneeFiltre] = useState(anneeCourante);
   const [moisFiltre, setMoisFiltre] = useState(moisCourant);
   const [rechercheTexte, setRechercheTexte] = useState("");
-  const [vue, setVue] = useState("dossiers");
+  const [vue, setVue] = useState(() =>
+    new URLSearchParams(window.location.search).has("google") ? "equipe" : "dossiers"
+  );
   const [modalDossier, setModalDossier] = useState(null); // null | {} | dossier existant
   const [modalCommercial, setModalCommercial] = useState(null);
   const [modalEntreprise, setModalEntreprise] = useState(null); // null | {} | entreprise existante
@@ -664,6 +666,7 @@ export default function App() {
             entreprises={entreprises}
             commerciaux={commerciaux}
             estAdmin={estAdmin}
+            estAdminPrincipal={estAdminPrincipal}
             onNouvelleEntreprise={() => setModalEntreprise({})}
             onModifierEntreprise={(e) => setModalEntreprise(e)}
             onNouveauCommercial={() => setModalCommercial({})}
@@ -2370,7 +2373,7 @@ function ModalAvis({ commerciaux, dossiersTous, retrocommissions, estAdmin, util
 // ---------- Équipe & entreprises (admin) ----------
 
 function EquipeEtEntreprises({
-  entreprises, commerciaux, estAdmin,
+  entreprises, commerciaux, estAdmin, estAdminPrincipal,
   onNouvelleEntreprise, onModifierEntreprise, onNouveauCommercial, onModifierCommercial, onSupprimerCommercial,
 }) {
   const nomEntreprise = (id) => entreprises.find((e) => e.id === id)?.nom || "—";
@@ -2454,6 +2457,167 @@ function EquipeEtEntreprises({
       </div>
 
       {estAdmin && <ComptesAnimateur />}
+      {estAdminPrincipal && <ConnexionsGoogle />}
+    </div>
+  );
+}
+
+// ---------- Connexion des fiches Google (admin principal) ----------
+
+function ConnexionsGoogle() {
+  const [donnees, setDonnees] = useState(null);
+  const [erreur, setErreur] = useState("");
+  const [message, setMessage] = useState("");
+  const [enCours, setEnCours] = useState(null);
+
+  const charger = useCallback(async () => {
+    try {
+      setDonnees(await api("/api/google/connexions"));
+    } catch (e) {
+      setErreur(e.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("google")) {
+      if (params.get("google") === "ok") setMessage("Compte Google connecté.");
+      else setErreur(params.get("detail") || "La connexion à Google a échoué.");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    charger();
+  }, [charger]);
+
+  const agir = async (entrepriseId, action, succes) => {
+    setEnCours(entrepriseId);
+    setErreur("");
+    setMessage("");
+    try {
+      const resultat = await action();
+      setMessage(typeof succes === "function" ? succes(resultat) : succes);
+    } catch (e) {
+      setErreur(e.message);
+    } finally {
+      setEnCours(null);
+      await charger();
+    }
+  };
+
+  const quand = (iso) => (iso ? new Date(iso + "Z").toLocaleString("fr-FR") : "jamais");
+
+  if (!donnees) return erreur ? <div style={styles.bandeauErreur}>{erreur}</div> : null;
+
+  return (
+    <div style={{ marginTop: 40 }}>
+      <div style={styles.sectionHeader}>
+        <h2 style={styles.sectionTitre}>Avis Google — connexion des fiches</h2>
+      </div>
+      <div style={{ ...styles.tauxAutoAide, marginTop: 0 }}>
+        Chaque agence se connecte avec le compte Google qui possède sa fiche. Une fois l'établissement choisi, les avis
+        sont récupérés automatiquement chaque jour.
+      </div>
+
+      {erreur && (
+        <div style={styles.bandeauErreur}>
+          {erreur}
+          <button style={styles.fermerErreur} onClick={() => setErreur("")}><X size={14} /></button>
+        </div>
+      )}
+      {message && <div style={styles.messageConnexion}>{message}</div>}
+      {!donnees.configure && (
+        <div style={styles.bandeauErreur}>
+          <span>
+            Connexion Google non configurée sur le serveur (variables GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET).
+            Adresse de redirection à déclarer dans Google Cloud : <strong>{donnees.adresse_retour}</strong>
+          </span>
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {donnees.connexions.map((c) => (
+          <div
+            key={c.entreprise_id}
+            style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: "16px 18px" }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+              <strong>{c.entreprise_nom}</strong>
+              {c.connectee ? (
+                <span style={{ fontSize: 12.5, color: "var(--positive)" }}>Connectée · {c.email}</span>
+              ) : (
+                <button
+                  style={{ ...styles.boutonAjout, opacity: donnees.configure ? 1 : 0.5 }}
+                  disabled={!donnees.configure}
+                  onClick={() => { window.location.href = `/api/google/connecter?entreprise_id=${c.entreprise_id}`; }}
+                >
+                  Connecter le compte Google
+                </button>
+              )}
+            </div>
+
+            {c.connectee && (
+              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+                {c.lieux.length > 0 ? (
+                  <label style={{ ...styles.champLabel, marginBottom: 0 }}>
+                    Établissement Google
+                    <select
+                      style={styles.select}
+                      value={c.lieu_id || ""}
+                      disabled={enCours === c.entreprise_id}
+                      onChange={(e) =>
+                        agir(c.entreprise_id, () => api(`/api/google/connexions/${c.entreprise_id}/lieu`, { method: "PUT", body: { lieu_id: e.target.value } }), "Établissement enregistré.")
+                      }
+                    >
+                      {!c.lieu_id && <option value="">Choisir l'établissement…</option>}
+                      {c.lieux.map((l) => <option key={l.id} value={l.id}>{l.nom}</option>)}
+                    </select>
+                  </label>
+                ) : (
+                  <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+                    Aucun établissement trouvé pour l'instant (l'accès à l'API Google doit être approuvé).
+                  </div>
+                )}
+
+                <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+                  {c.nb_avis} avis récupérés · dernière synchronisation : {quand(c.derniere_sync)}
+                </div>
+                {c.derniere_erreur && <div style={{ fontSize: 12.5, color: "var(--negative)" }}>{c.derniere_erreur}</div>}
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    style={{ ...styles.boutonSecondaire, opacity: c.lieu_id ? 1 : 0.5 }}
+                    disabled={!c.lieu_id || enCours === c.entreprise_id}
+                    onClick={() =>
+                      agir(c.entreprise_id, () => api(`/api/google/connexions/${c.entreprise_id}/synchroniser`, { method: "POST" }),
+                        (r) => `${r.total} avis lus, ${r.nouveaux} nouveau(x).`)
+                    }
+                  >
+                    <RefreshCw size={14} /> Synchroniser maintenant
+                  </button>
+                  <button
+                    style={styles.boutonSecondaire}
+                    disabled={enCours === c.entreprise_id}
+                    onClick={() =>
+                      agir(c.entreprise_id, () => api(`/api/google/connexions/${c.entreprise_id}/lieux`, { method: "POST" }), "Liste des établissements mise à jour.")
+                    }
+                  >
+                    Recharger les établissements
+                  </button>
+                  <button
+                    style={styles.boutonSecondaire}
+                    disabled={enCours === c.entreprise_id}
+                    onClick={() => {
+                      if (!confirm(`Déconnecter le compte Google de ${c.entreprise_nom} ? Les avis déjà récupérés sont conservés.`)) return;
+                      agir(c.entreprise_id, () => api(`/api/google/connexions/${c.entreprise_id}`, { method: "DELETE" }), "Compte Google déconnecté.");
+                    }}
+                  >
+                    Déconnecter
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

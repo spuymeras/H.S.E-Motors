@@ -3,17 +3,22 @@ import json
 import os
 import sqlite3
 import secrets
+import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
 from functools import wraps
 from pathlib import Path
+from urllib.parse import quote
 
-from flask import Flask, Response, g, jsonify, request, send_from_directory, session
+from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory, session
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
+
+import google_avis
 
 try:
     import email_config
@@ -160,6 +165,30 @@ CREATE TABLE IF NOT EXISTS avis_google (
 -- lecture seule pour les mois déjà écoulés au moment de la migration (voir migrer_db
 -- et avis_obtenus_mensuel). Créée vide dès le premier démarrage sur les installations
 -- neuves, pour que le code n'ait jamais à distinguer "table absente" de "table vide".
+CREATE TABLE IF NOT EXISTS google_connexions (
+    entreprise_id INTEGER PRIMARY KEY REFERENCES entreprises(id),
+    email TEXT,
+    refresh_token TEXT NOT NULL,
+    lieu_id TEXT,
+    lieu_nom TEXT,
+    lieux_json TEXT,
+    connecte_le TEXT NOT NULL,
+    derniere_sync TEXT,
+    derniere_tentative TEXT,
+    derniere_erreur TEXT
+);
+
+CREATE TABLE IF NOT EXISTS avis_google_recus (
+    review_id TEXT PRIMARY KEY,
+    entreprise_id INTEGER NOT NULL REFERENCES entreprises(id),
+    auteur TEXT NOT NULL,
+    note INTEGER NOT NULL,
+    commentaire TEXT NOT NULL DEFAULT '',
+    cree_le TEXT,
+    maj_le TEXT,
+    recupere_le TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS avis_google_legacy (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     commercial_id INTEGER NOT NULL REFERENCES commerciaux(id),
@@ -1741,6 +1770,181 @@ def delete_avis(avis_id):
     return jsonify(ok=True)
 
 
+
+# ---------- Routes: connexion Google Business Profile (admin principal) ----------
+#
+# Chaque agence a sa propre fiche Google, détenue par un compte Google différent :
+# l'administrateur connecte donc chaque entreprise séparément (une autorisation par
+# compte). Les avis récupérés vont dans avis_google_recus, en attente d'attribution.
+
+
+def adresse_retour_google():
+    explicite = os.environ.get("GOOGLE_REDIRECT_URI")
+    if explicite:
+        return explicite
+    base = request.url_root.rstrip("/")
+    if "127.0.0.1" not in base and "localhost" not in base:
+        base = base.replace("http://", "https://", 1)
+    return base + "/api/google/callback"
+
+
+def connexion_google_dict(entreprise, ligne, nb_avis):
+    if ligne is None:
+        return {"entreprise_id": entreprise["id"], "entreprise_nom": entreprise["nom"], "connectee": False}
+    return {
+        "entreprise_id": entreprise["id"],
+        "entreprise_nom": entreprise["nom"],
+        "connectee": True,
+        "email": ligne["email"],
+        "lieu_id": ligne["lieu_id"],
+        "lieu_nom": ligne["lieu_nom"],
+        "lieux": json.loads(ligne["lieux_json"]) if ligne["lieux_json"] else [],
+        "derniere_sync": ligne["derniere_sync"],
+        "derniere_erreur": ligne["derniere_erreur"],
+        "nb_avis": nb_avis,
+    }
+
+
+@app.get("/api/google/connexions")
+@admin_complet_requis
+def list_connexions_google():
+    db = get_db()
+    resultat = []
+    for ent in db.execute("SELECT * FROM entreprises ORDER BY nom").fetchall():
+        ligne = db.execute("SELECT * FROM google_connexions WHERE entreprise_id = ?", (ent["id"],)).fetchone()
+        nb = db.execute("SELECT COUNT(*) FROM avis_google_recus WHERE entreprise_id = ?", (ent["id"],)).fetchone()[0]
+        resultat.append(connexion_google_dict(ent, ligne, nb))
+    return jsonify(configure=google_avis.est_configure(), adresse_retour=adresse_retour_google(), connexions=resultat)
+
+
+@app.get("/api/google/connecter")
+@admin_complet_requis
+def connecter_google():
+    if not google_avis.est_configure():
+        return jsonify(error="GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET ne sont pas définis sur le serveur"), 400
+    db = get_db()
+    entreprise_id = request.args.get("entreprise_id", type=int)
+    if not entreprise_id or not db.execute("SELECT 1 FROM entreprises WHERE id = ?", (entreprise_id,)).fetchone():
+        return jsonify(error="Entreprise inconnue"), 400
+    etat = secrets.token_urlsafe(24)
+    session["google_oauth"] = {"etat": etat, "entreprise_id": entreprise_id}
+    return redirect(google_avis.url_autorisation(adresse_retour_google(), etat))
+
+
+@app.get("/api/google/callback")
+@admin_complet_requis
+def retour_google():
+    attendu = session.pop("google_oauth", None)
+    etat = request.args.get("state", "")
+    if not attendu or not secrets.compare_digest(attendu["etat"], etat):
+        return redirect("/?google=erreur&detail=" + quote("Demande de connexion invalide ou expirée, recommencez."))
+    if request.args.get("error"):
+        return redirect("/?google=erreur&detail=" + quote("Autorisation refusée côté Google."))
+
+    db = get_db()
+    try:
+        jetons = google_avis.echanger_code(request.args.get("code", ""), adresse_retour_google())
+        if not jetons.get("refresh_token"):
+            raise google_avis.ErreurGoogle(
+                "autre",
+                "Google n'a pas fourni d'autorisation permanente : retirez l'accès de cette application dans "
+                "le compte Google concerné, puis recommencez.",
+            )
+        email = google_avis.email_du_compte(jetons["access_token"])
+        google_avis.enregistrer_connexion(db, app.secret_key, attendu["entreprise_id"], jetons["refresh_token"], email)
+    except google_avis.ErreurGoogle as e:
+        return redirect("/?google=erreur&detail=" + quote(e.message))
+
+    # Le compte est connecté ; la liste des établissements peut échouer tant que Google n'a
+    # pas approuvé l'accès à l'API : l'erreur est alors affichée, sans perdre la connexion.
+    try:
+        google_avis.charger_lieux(db, app.secret_key, attendu["entreprise_id"])
+    except google_avis.ErreurGoogle:
+        pass
+    return redirect("/?google=ok")
+
+
+def ligne_connexion_ou_404(db, entreprise_id):
+    return db.execute("SELECT * FROM google_connexions WHERE entreprise_id = ?", (entreprise_id,)).fetchone()
+
+
+@app.post("/api/google/connexions/<int:entreprise_id>/lieux")
+@admin_complet_requis
+def recharger_lieux_google(entreprise_id):
+    db = get_db()
+    if ligne_connexion_ou_404(db, entreprise_id) is None:
+        return jsonify(error="Aucune connexion Google pour cette entreprise"), 404
+    try:
+        lieux = google_avis.charger_lieux(db, app.secret_key, entreprise_id)
+    except google_avis.ErreurGoogle as e:
+        return jsonify(error=e.message), 502
+    return jsonify(ok=True, lieux=lieux)
+
+
+@app.put("/api/google/connexions/<int:entreprise_id>/lieu")
+@admin_complet_requis
+def choisir_lieu_google(entreprise_id):
+    db = get_db()
+    ligne = ligne_connexion_ou_404(db, entreprise_id)
+    if ligne is None:
+        return jsonify(error="Aucune connexion Google pour cette entreprise"), 404
+    lieu_id = (request.get_json(silent=True) or {}).get("lieu_id")
+    lieux = json.loads(ligne["lieux_json"]) if ligne["lieux_json"] else []
+    choisi = next((l for l in lieux if l["id"] == lieu_id), None)
+    if choisi is None:
+        return jsonify(error="Établissement inconnu"), 400
+    db.execute(
+        "UPDATE google_connexions SET lieu_id = ?, lieu_nom = ?, derniere_tentative = NULL WHERE entreprise_id = ?",
+        (choisi["id"], choisi["nom"], entreprise_id),
+    )
+    db.commit()
+    return jsonify(ok=True)
+
+
+@app.post("/api/google/connexions/<int:entreprise_id>/synchroniser")
+@admin_complet_requis
+def synchroniser_google(entreprise_id):
+    db = get_db()
+    try:
+        resultat = google_avis.synchroniser(db, app.secret_key, entreprise_id)
+    except google_avis.ErreurGoogle as e:
+        return jsonify(error=e.message), 502
+    return jsonify(ok=True, **resultat)
+
+
+@app.delete("/api/google/connexions/<int:entreprise_id>")
+@admin_complet_requis
+def deconnecter_google(entreprise_id):
+    google_avis.deconnecter(get_db(), app.secret_key, entreprise_id)
+    return jsonify(ok=True)
+
+
+def boucle_synchro_google():
+    """Synchronisation quotidienne, sans service externe : chaque worker se réveille
+    toutes les heures, reclamer_synchro garantit qu'un seul fait réellement le travail."""
+    time.sleep(60)
+    while True:
+        try:
+            db = sqlite3.connect(DB_PATH, timeout=30)
+            db.row_factory = sqlite3.Row
+            ids = [r["entreprise_id"] for r in db.execute("SELECT entreprise_id FROM google_connexions WHERE lieu_id IS NOT NULL")]
+            for entreprise_id in ids:
+                if google_avis.reclamer_synchro(db, entreprise_id):
+                    try:
+                        google_avis.synchroniser(db, app.secret_key, entreprise_id)
+                    except google_avis.ErreurGoogle:
+                        pass
+            db.close()
+        except Exception:
+            app.logger.exception("Synchronisation Google : erreur inattendue")
+        time.sleep(3600)
+
+
+def demarrer_synchro_google():
+    if google_avis.est_configure():
+        threading.Thread(target=boucle_synchro_google, daemon=True).start()
+
+
 # ---------- Routes: refacturation ----------
 #
 # Suivi mensuel (mois courant uniquement, comme les avis Google) du volume de leads
@@ -2125,6 +2329,7 @@ def index():
 # Exécuté à l'import du module : garantit que la base est prête à la fois en local
 # (python3 server.py) et en production (gunicorn server:app, qui n'exécute jamais __main__).
 init_db()
+demarrer_synchro_google()
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=8731, debug=True)

@@ -692,6 +692,7 @@ export default function App() {
             commerciaux={commerciaux}
             estAdmin={estAdmin}
             estAdminPrincipal={estAdminPrincipal}
+            onNotesEnregistrees={chargerReferentiels}
             onNouvelleEntreprise={() => setModalEntreprise({})}
             onModifierEntreprise={(e) => setModalEntreprise(e)}
             onNouveauCommercial={() => setModalCommercial({})}
@@ -2398,7 +2399,7 @@ function ModalAvis({ commerciaux, dossiersTous, retrocommissions, estAdmin, util
 // ---------- Équipe & entreprises (admin) ----------
 
 function EquipeEtEntreprises({
-  entreprises, commerciaux, estAdmin, estAdminPrincipal,
+  entreprises, commerciaux, estAdmin, estAdminPrincipal, onNotesEnregistrees,
   onNouvelleEntreprise, onModifierEntreprise, onNouveauCommercial, onModifierCommercial, onSupprimerCommercial,
 }) {
   const nomEntreprise = (id) => entreprises.find((e) => e.id === id)?.nom || "—";
@@ -2482,6 +2483,7 @@ function EquipeEtEntreprises({
       </div>
 
       {estAdmin && <ComptesAnimateur />}
+      {estAdminPrincipal && <NotesGoogleManuelles entreprises={entreprises} onEnregistre={onNotesEnregistrees} />}
       {estAdminPrincipal && <ConnexionsGoogle />}
     </div>
   );
@@ -2622,6 +2624,15 @@ function Jauge({ pourcentage }) {
   );
 }
 
+function EtoilesNote({ note }) {
+  return (
+    <span style={{ position: "relative", display: "inline-block", fontSize: 18, letterSpacing: 2, lineHeight: 1 }} role="img" aria-label={`${note.toLocaleString("fr-FR")} étoiles sur 5`}>
+      <span style={{ color: "var(--surface-2)" }}>★★★★★</span>
+      <span style={{ position: "absolute", left: 0, top: 0, overflow: "hidden", whiteSpace: "nowrap", width: `${(note / 5) * 100}%`, color: "var(--accent)" }}>★★★★★</span>
+    </span>
+  );
+}
+
 function TableauDeBord({ utilisateur, estAdmin, estAdminPrincipal, peutToutVoir, entreprises, commerciaux, dossiersTous, chargesFixes, refacturationHisto, avis, onVoirDossiers }) {
   const maintenant = new Date();
   const moisActuelReel = `${maintenant.getFullYear()}-${String(maintenant.getMonth() + 1).padStart(2, "0")}`;
@@ -2687,6 +2698,24 @@ function TableauDeBord({ utilisateur, estAdmin, estAdminPrincipal, peutToutVoir,
       const ids = new Set(avecObjectif.map((e) => e.id));
       realise = ds.filter((d) => ids.has(d.entreprise_id)).reduce((s, d) => s + d.mandat_total / 1.2, 0);
     }
+  }
+
+  // Note Google saisie à la main : celle de l'entreprise filtrée (ou du commercial),
+  // sinon la moyenne des entreprises renseignées, pondérée par leur nombre d'avis.
+  const entreprisesNotees = entreprises.filter((e) => {
+    if (e.note_google == null) return false;
+    if (estCommercial) return e.id === utilisateur.entreprise_id;
+    return dansPerimetre(e.id);
+  });
+  let noteGoogle = null;
+  let nbAvisGoogle = null;
+  if (entreprisesNotees.length > 0) {
+    const poids = entreprisesNotees.map((e) => e.nb_avis_google || 0);
+    const totalPoids = poids.reduce((s, v) => s + v, 0);
+    noteGoogle = totalPoids > 0
+      ? entreprisesNotees.reduce((s, e, i) => s + e.note_google * poids[i], 0) / totalPoids
+      : entreprisesNotees.reduce((s, e) => s + e.note_google, 0) / entreprisesNotees.length;
+    if (totalPoids > 0) nbAvisGoogle = totalPoids;
   }
 
   const repartition = entreprises
@@ -2814,6 +2843,17 @@ function TableauDeBord({ utilisateur, estAdmin, estAdminPrincipal, peutToutVoir,
           ) : (
             <div style={{ ...styles.videEtat, padding: "30px 0" }}>Aucun objectif défini.</div>
           )}
+          {noteGoogle != null && (
+            <div style={{ display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: 10, marginTop: 18, paddingTop: 16, borderTop: "1px solid var(--border)", width: "100%", justifyContent: "center" }}>
+              <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 34, fontWeight: 600, lineHeight: 1 }}>
+                {noteGoogle.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+              </span>
+              <EtoilesNote note={noteGoogle} />
+              {nbAvisGoogle != null && (
+                <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{nbAvisGoogle} avis Google</span>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ ...carte, padding: "24px 26px", flex: "1.3 1 300px", minWidth: 0 }}>
@@ -2902,6 +2942,94 @@ function TableauDeBord({ utilisateur, estAdmin, estAdminPrincipal, peutToutVoir,
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+// ---------- Note Google saisie à la main (admin principal) ----------
+
+function NotesGoogleManuelles({ entreprises, onEnregistre }) {
+  const [saisies, setSaisies] = useState({});
+  const [enCours, setEnCours] = useState(null);
+  const [erreur, setErreur] = useState("");
+  const [message, setMessage] = useState("");
+
+  const virgule = (v) => (v == null ? "" : String(v).replace(".", ","));
+  const valeur = (e, champ) => {
+    const s = saisies[e.id];
+    if (s && champ in s) return s[champ];
+    return virgule(champ === "note" ? e.note_google : e.nb_avis_google);
+  };
+  const modifier = (e, champ, v) => setSaisies((prec) => ({ ...prec, [e.id]: { ...prec[e.id], [champ]: v } }));
+
+  const enregistrer = async (e) => {
+    setEnCours(e.id);
+    setErreur("");
+    setMessage("");
+    try {
+      await api(`/api/entreprises/${e.id}/note-google`, {
+        method: "PUT",
+        body: { note: valeur(e, "note"), nb_avis: valeur(e, "nb_avis") },
+      });
+      setSaisies((prec) => { const { [e.id]: _, ...reste } = prec; return reste; });
+      setMessage(`Note de ${e.nom} enregistrée.`);
+      if (onEnregistre) await onEnregistre();
+    } catch (err) {
+      setErreur(err.message);
+    } finally {
+      setEnCours(null);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 40 }}>
+      <div style={styles.sectionHeader}>
+        <h2 style={styles.sectionTitre}>Avis Google — note saisie à la main</h2>
+      </div>
+      <div style={{ ...styles.tauxAutoAide, marginTop: 0 }}>
+        Recopiez la note affichée sur la fiche Google de chaque agence (ex : 4,8) et son nombre d'avis. Elle apparaît sur
+        le tableau de bord. Laissez vide pour ne rien afficher.
+      </div>
+      {erreur && (
+        <div style={styles.bandeauErreur}>
+          {erreur}
+          <button style={styles.fermerErreur} onClick={() => setErreur("")}><X size={14} /></button>
+        </div>
+      )}
+      {message && <div style={styles.messageConnexion}>{message}</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {entreprises.map((e) => (
+          <div
+            key={e.id}
+            style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: "16px 18px", display: "flex", alignItems: "flex-end", flexWrap: "wrap", gap: 14 }}
+          >
+            <strong style={{ flex: "1 1 160px", paddingBottom: 10 }}>{e.nom}</strong>
+            <label style={{ ...styles.champLabel, marginBottom: 0, width: 120 }}>
+              Note (sur 5)
+              <input
+                style={styles.input}
+                inputMode="decimal"
+                placeholder="4,8"
+                value={valeur(e, "note")}
+                onChange={(ev) => modifier(e, "note", ev.target.value)}
+              />
+            </label>
+            <label style={{ ...styles.champLabel, marginBottom: 0, width: 140 }}>
+              Nombre d'avis
+              <input
+                style={styles.input}
+                inputMode="numeric"
+                placeholder="132"
+                value={valeur(e, "nb_avis")}
+                onChange={(ev) => modifier(e, "nb_avis", ev.target.value)}
+              />
+            </label>
+            <button style={styles.boutonAjout} disabled={enCours === e.id} onClick={() => enregistrer(e)}>
+              Enregistrer
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -252,6 +252,11 @@ def migrer_db(db):
     colonnes_entreprises = {row["name"] for row in db.execute("PRAGMA table_info(entreprises)")}
     if "objectif_ca_ht_brut" not in colonnes_entreprises:
         db.execute("ALTER TABLE entreprises ADD COLUMN objectif_ca_ht_brut REAL")
+    # Note et nombre d'avis Google saisis à la main (en attendant l'extraction automatique).
+    if "note_google" not in colonnes_entreprises:
+        db.execute("ALTER TABLE entreprises ADD COLUMN note_google REAL")
+    if "nb_avis_google" not in colonnes_entreprises:
+        db.execute("ALTER TABLE entreprises ADD COLUMN nb_avis_google INTEGER")
 
     colonnes_utilisateurs = {row["name"] for row in db.execute("PRAGMA table_info(utilisateurs)")}
     if "nom" not in colonnes_utilisateurs:
@@ -859,7 +864,46 @@ def entreprise_dict(row, db):
         "objectif_ca_ht_brut": objectif,
         "ca_ht_brut_mois_courant": ca_ht_brut_mois,
         "pourcentage_atteinte": pourcentage_atteinte,
+        "note_google": row["note_google"],
+        "nb_avis_google": row["nb_avis_google"],
     }
+
+
+@app.put("/api/entreprises/<int:entreprise_id>/note-google")
+@admin_complet_requis
+def modifier_note_google(entreprise_id):
+    """Note moyenne (0 à 5) et nombre total d'avis Google saisis à la main.
+    Une valeur vide efface la saisie."""
+    db = get_db()
+    if not db.execute("SELECT 1 FROM entreprises WHERE id = ?", (entreprise_id,)).fetchone():
+        return jsonify(error="Entreprise introuvable"), 404
+    data = request.get_json(silent=True) or {}
+
+    brut_note = data.get("note")
+    note = None
+    if brut_note not in (None, ""):
+        try:
+            note = float(str(brut_note).replace(",", "."))
+        except ValueError:
+            return jsonify(error="La note doit être un nombre (ex : 4,8)"), 400
+        if not 0 <= note <= 5:
+            return jsonify(error="La note doit être comprise entre 0 et 5"), 400
+        note = round(note, 2)
+
+    brut_nb = data.get("nb_avis")
+    nb_avis = None
+    if brut_nb not in (None, ""):
+        try:
+            nb_avis = int(float(str(brut_nb).replace(",", ".")))
+        except ValueError:
+            return jsonify(error="Le nombre d'avis doit être un nombre entier"), 400
+        if nb_avis < 0:
+            return jsonify(error="Le nombre d'avis ne peut pas être négatif"), 400
+
+    db.execute("UPDATE entreprises SET note_google = ?, nb_avis_google = ? WHERE id = ?", (note, nb_avis, entreprise_id))
+    db.commit()
+    row = db.execute("SELECT * FROM entreprises WHERE id = ?", (entreprise_id,)).fetchone()
+    return jsonify(entreprise_dict(row, db))
 
 
 @app.get("/api/entreprises")

@@ -108,6 +108,10 @@ async function api(path, options = {}) {
 const fmtEUR = (n) =>
   new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(n || 0);
 
+// Pourcentage d'objectif : en dessous de 100 %, on arrondit à l'inférieur pour ne jamais
+// afficher « 100 % » tant que l'objectif n'est pas réellement atteint.
+const fmtPourcentageObjectif = (p) => (p < 100 ? Math.floor(p) : Math.round(p));
+
 // ---------- App ----------
 
 export default function App() {
@@ -1209,7 +1213,7 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
       ? [{
           id: "objectif_atteinte",
           label: `Objectif du mois (${fmtEUR(commercialCible.objectif_ca_ht_brut)})`,
-          valeur: `${commercialCible.pourcentage_atteinte.toFixed(0)}%`,
+          valeur: `${fmtPourcentageObjectif(commercialCible.pourcentage_atteinte)}%`,
           icone: Target,
           couleur:
             commercialCible.pourcentage_atteinte >= 100 ? "var(--positive)"
@@ -1232,7 +1236,7 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
       ? [{
           id: "objectif_entreprise_atteinte",
           label: `Objectif entreprise du mois (${fmtEUR(entrepriseCible.objectif_ca_ht_brut)})`,
-          valeur: `${entrepriseCible.pourcentage_atteinte.toFixed(0)}%`,
+          valeur: `${fmtPourcentageObjectif(entrepriseCible.pourcentage_atteinte)}%`,
           icone: Building2,
           couleur:
             entrepriseCible.pourcentage_atteinte >= 100 ? "var(--positive)"
@@ -1246,7 +1250,7 @@ function KpiRangee({ dossiers, estAdmin, peutReorganiser, kpiOrder, onReorder, c
           return [{
             id: "objectif_global_entreprises",
             label: `Objectif global du mois (${fmtEUR(objectifGlobalEntreprises.objectif)})`,
-            valeur: `${pct.toFixed(0)}%`,
+            valeur: `${fmtPourcentageObjectif(pct)}%`,
             icone: Building2,
             couleur: pct >= 100 ? "var(--positive)" : pct >= 50 ? "var(--accent)" : "var(--negative)",
           }];
@@ -2461,7 +2465,7 @@ function EquipeEtEntreprises({
                   {c.taux_auto && <span style={styles.puceAuto}> auto</span>}
                 </td>
                 <td style={{ ...styles.td, ...styles.mono, textAlign: "right" }}>
-                  {c.objectif_ca_ht_brut != null ? `${c.pourcentage_atteinte.toFixed(0)}%` : "—"}
+                  {c.objectif_ca_ht_brut != null ? `${fmtPourcentageObjectif(c.pourcentage_atteinte)}%` : "—"}
                 </td>
                 <td style={styles.td}>
                   <span style={{ color: c.actif ? "var(--positive)" : "var(--text-muted)" }}>{c.actif ? "Actif" : "Désactivé"}</span>
@@ -2615,11 +2619,14 @@ function Anneau({ parts, centreTexte, centreLibelle }) {
 
 function Jauge({ pourcentage }) {
   const longueur = Math.min(Math.max(pourcentage, 0), 100) * 2.513;
+  // En dessous de 100 %, on arrondit à l'inférieur : 99,98 % ne doit pas s'afficher « 100 % »
+  // tant que l'objectif n'est pas atteint.
+  const affiche = pourcentage < 100 ? Math.floor(pourcentage) : Math.round(pourcentage);
   return (
-    <svg width="210" height="128" viewBox="0 0 200 118" role="img" aria-label={`Objectif atteint à ${Math.round(pourcentage)} %`}>
+    <svg width="210" height="128" viewBox="0 0 200 118" role="img" aria-label={`Objectif atteint à ${affiche} %`}>
       <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" style={{ stroke: "var(--surface-2)" }} strokeWidth="18" strokeLinecap="round" />
       <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" style={{ stroke: "var(--accent)" }} strokeWidth="18" strokeLinecap="round" strokeDasharray={`${longueur} 251.3`} />
-      <text x="100" y="92" textAnchor="middle" style={{ fill: "var(--text)", font: "600 30px 'IBM Plex Mono', monospace" }}>{Math.round(pourcentage)} %</text>
+      <text x="100" y="92" textAnchor="middle" style={{ fill: "var(--text)", font: "600 30px 'IBM Plex Mono', monospace" }}>{affiche} %</text>
     </svg>
   );
 }

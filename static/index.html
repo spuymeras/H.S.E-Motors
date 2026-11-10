@@ -2624,6 +2624,188 @@ function Jauge({ pourcentage }) {
   );
 }
 
+// ---------- Top des véhicules vendus ----------
+
+// Le champ « Véhicule » est du texte libre (« Clio 4 », « Renault Clio III »…). On le
+// ramène à « Marque Modèle » pour que toutes les générations d'un même modèle se cumulent.
+const MARQUES_VEHICULES = {
+  renault: ["clio", "megane", "twingo", "captur", "scenic", "zoe", "talisman", "kadjar", "arkana", "espace", "laguna", "koleos", "kangoo", "trafic", "master"],
+  peugeot: ["108", "208", "308", "408", "508", "2008", "3008", "5008", "partner", "rifter", "expert", "boxer", "206", "207", "307", "407", "504"],
+  citroen: ["c1", "c3", "c4", "c5", "berlingo", "picasso", "ds3", "ds4", "jumpy", "spacetourer"],
+  dacia: ["sandero", "duster", "jogger", "spring", "logan", "lodgy", "dokker"],
+  volkswagen: ["golf", "polo", "tiguan", "passat", "eos", "up", "touran", "t-roc", "t-cross", "caddy", "tiguan", "arteon", "scirocco", "touareg", "sharan", "beetle"],
+  audi: ["a1", "a3", "a4", "a5", "a6", "q2", "q3", "q5", "q7", "tt"],
+  bmw: ["x1", "x2", "x3", "x4", "x5", "serie", "z4", "i3"],
+  mini: ["mini", "countryman", "cooper", "clubman"],
+  seat: ["leon", "ibiza", "ateca", "arona", "alhambra"],
+  kia: ["niro", "picanto", "sportage", "ceed", "rio", "stonic", "sorento"],
+  ford: ["fiesta", "focus", "mustang", "kuga", "puma", "mondeo", "ka", "transit"],
+  toyota: ["aygo", "yaris", "c-hr", "corolla", "rav4", "auris", "prius"],
+  nissan: ["juke", "qashqai", "micra", "leaf", "note", "x-trail"],
+  suzuki: ["vitara", "swift", "ignis", "jimny"],
+  mercedes: ["viano", "classe", "vito", "sprinter", "cla", "gla", "glc"],
+  porsche: ["macan", "cayenne", "panamera", "boxster", "cayman", "911"],
+};
+const AUTRES_MARQUES_VEHICULES = [
+  "fiat", "skoda", "opel", "hyundai", "mg", "infiniti", "chevrolet", "jeep", "honda", "mazda", "lexus", "volvo", "alfa",
+  "jaguar", "tesla", "cupra", "smart", "lancia", "subaru", "mitsubishi", "chrysler", "ssangyong", "maserati", "lada", "land", "dodge", "saab",
+];
+const ALIAS_MARQUES_VEHICULES = { vw: "volkswagen", "mercedes-benz": "mercedes", "alfa-romeo": "alfa", "land-rover": "land", citroën: "citroen" };
+const MARQUE_DU_MODELE = {};
+Object.entries(MARQUES_VEHICULES).forEach(([marque, modeles]) => modeles.forEach((m) => { if (!(m in MARQUE_DU_MODELE) && m !== "mini") MARQUE_DU_MODELE[m] = marque; }));
+const MARQUES_AFFICHEES = { bmw: "BMW", mg: "MG", ds: "DS", vw: "VW", alfa: "Alfa Romeo", land: "Land Rover", citroen: "Citroën", mercedes: "Mercedes" };
+const MODELES_AFFICHES = { megane: "Mégane", scenic: "Scénic", serie: "Série", zoe: "ZOE", eos: "EOS", "t-roc": "T-Roc", "t-cross": "T-Cross", "c-hr": "C-HR" };
+const VEHICULES_IGNORES = ["agence"];
+
+function sansAccents(texte) {
+  return texte.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function majusculeInitiale(mot) {
+  return mot.charAt(0).toUpperCase() + mot.slice(1);
+}
+
+function afficherModele(cle) {
+  if (MODELES_AFFICHES[cle]) return MODELES_AFFICHES[cle];
+  if (/\d/.test(cle) && /[a-z]/.test(cle)) return cle.toUpperCase(); // a3, x2, c4
+  if (cle.length <= 2) return cle.toUpperCase();
+  return majusculeInitiale(cle);
+}
+
+// Retourne { cle, nom } ou null si la ligne ne désigne pas un véhicule (vide, « Agence »…).
+function identifierVehicule(texte) {
+  const mots = sansAccents(texte || "").split(" ").filter(Boolean);
+  if (mots.length === 0 || VEHICULES_IGNORES.includes(mots[0])) return null;
+
+  let marque;
+  let reste;
+  const premier = ALIAS_MARQUES_VEHICULES[mots[0]] || mots[0];
+  if (MARQUES_VEHICULES[premier] || AUTRES_MARQUES_VEHICULES.includes(premier)) {
+    marque = premier;
+    reste = mots.slice(1);
+  } else if (/^ds\d+$/.test(premier)) {
+    marque = "ds";
+    reste = [premier.slice(2)];
+  } else if (MARQUE_DU_MODELE[premier]) {
+    marque = MARQUE_DU_MODELE[premier];
+    reste = mots;
+  } else {
+    marque = premier;
+    reste = mots.slice(1);
+  }
+
+  let modele = reste[0] || marque;
+  // « Série 1 », « Classe A » : le chiffre ou la lettre fait partie du modèle.
+  if ((modele === "serie" || modele === "classe") && reste[1]) modele = `${modele} ${reste[1]}`;
+
+  const nomMarque = MARQUES_AFFICHEES[marque] || majusculeInitiale(marque);
+  const nomModele = modele.split(" ").map(afficherModele).join(" ");
+  const nom = modele === marque ? nomMarque : `${nomMarque} ${nomModele}`;
+  return { cle: `${marque}|${modele}`, nom };
+}
+
+function TopVehicules({ dossiers, estAdmin, carte, titre, sous, piste }) {
+  const [mode, setMode] = useState("cumul"); // cumul | mois | periode
+  const [mois, setMois] = useState("");
+  const [de, setDe] = useState("");
+  const [a, setA] = useState("");
+
+  const moisDisponibles = [...new Set(dossiers.map((d) => d.date.slice(0, 7)))].sort((x, y) => y.localeCompare(x));
+  const libelle = (m) => { const t = libelleMois(m); return t.charAt(0).toUpperCase() + t.slice(1); };
+
+  let retenus = dossiers;
+  let resume = "Tous les mois cumulés";
+  if (estAdmin && mode === "mois" && moisDisponibles.length > 0) {
+    const m = mois || moisDisponibles[0];
+    retenus = dossiers.filter((d) => d.date.slice(0, 7) === m);
+    resume = libelle(m);
+  } else if (estAdmin && mode === "periode" && moisDisponibles.length > 0) {
+    const debut = de || moisDisponibles[moisDisponibles.length - 1];
+    const fin = a || moisDisponibles[0];
+    const [min, max] = debut <= fin ? [debut, fin] : [fin, debut];
+    retenus = dossiers.filter((d) => d.date.slice(0, 7) >= min && d.date.slice(0, 7) <= max);
+    resume = `${libelle(min)} → ${libelle(max)}`;
+  }
+
+  const groupes = {};
+  retenus.forEach((d) => {
+    const v = identifierVehicule(d.voiture);
+    if (!v) return;
+    const g = (groupes[v.cle] = groupes[v.cle] || { nom: v.nom, ventes: 0, ca: 0 });
+    g.ventes += 1;
+    g.ca += d.total_ht;
+  });
+  const top = Object.values(groupes).sort((x, y) => y.ventes - x.ventes || y.ca - x.ca || x.nom.localeCompare(y.nom, "fr")).slice(0, 3);
+  const maxVentes = Math.max(...top.map((t) => t.ventes), 1);
+
+  const selectPetit = { ...styles.selectFiltre, padding: "6px 10px" };
+  const choixMois = (valeur, onChange, defaut) => (
+    <select style={selectPetit} value={valeur || defaut} onChange={(e) => onChange(e.target.value)}>
+      {moisDisponibles.map((m) => <option key={m} value={m}>{libelle(m)}</option>)}
+    </select>
+  );
+
+  return (
+    <section style={{ ...carte, padding: "24px 26px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <div style={titre}>Top 3 des véhicules vendus</div>
+          <div style={sous}>{resume} · nombre de ventes par modèle</div>
+        </div>
+        {estAdmin && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <select style={selectPetit} value={mode} onChange={(e) => setMode(e.target.value)} aria-label="Période du classement">
+              <option value="cumul">Cumul total</option>
+              <option value="mois">Un mois précis</option>
+              <option value="periode">Une période</option>
+            </select>
+            {mode === "mois" && choixMois(mois, setMois, moisDisponibles[0])}
+            {mode === "periode" && (
+              <>
+                <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>du</span>
+                {choixMois(de, setDe, moisDisponibles[moisDisponibles.length - 1])}
+                <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>au</span>
+                {choixMois(a, setA, moisDisponibles[0])}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {top.length > 0 ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 16, marginTop: 20 }}>
+          {top.map((t, i) => (
+            <div key={t.nom} style={{ background: "var(--surface-2)", borderRadius: 14, padding: "18px 20px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{
+                  width: 30, height: 30, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 14,
+                  background: i === 0 ? "var(--accent)" : "var(--surface)", color: i === 0 ? "var(--on-accent)" : "var(--text)",
+                  border: i === 0 ? "none" : "1px solid var(--border-strong)",
+                }}>{i + 1}</span>
+                <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.nom}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 16 }}>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 24, fontWeight: 600 }}>
+                  {t.ventes} <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-muted)" }}>vente{t.ventes > 1 ? "s" : ""}</span>
+                </span>
+              </div>
+              <div style={{ ...piste, marginTop: 10, background: "var(--surface)" }}>
+                <div style={{ height: "100%", borderRadius: 4, background: "var(--accent)", width: `${(t.ventes / maxVentes) * 100}%` }} />
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 10 }}>
+                CA HT net : <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "var(--text)", fontWeight: 600 }}>{fmtEUR(t.ca)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={styles.videEtat}>Aucune vente sur cette période.</div>
+      )}
+    </section>
+  );
+}
+
 function EtoilesNote({ note }) {
   return (
     <span style={{ position: "relative", display: "inline-block", fontSize: 18, letterSpacing: 2, lineHeight: 1 }} role="img" aria-label={`${note.toLocaleString("fr-FR")} étoiles sur 5`}>
@@ -2897,6 +3079,15 @@ function TableauDeBord({ utilisateur, estAdmin, estAdminPrincipal, peutToutVoir,
           </div>
         </div>
       </section>
+
+      <TopVehicules
+        dossiers={dossiersTous.filter((d) => dansPerimetre(d.entreprise_id))}
+        estAdmin={estAdmin}
+        carte={carte}
+        titre={titre}
+        sous={sous}
+        piste={piste}
+      />
 
       <section style={{ ...carte, overflow: "hidden" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 22px", borderBottom: "1px solid var(--border)", gap: 10, flexWrap: "wrap" }}>

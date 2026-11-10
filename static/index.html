@@ -2655,7 +2655,10 @@ const MARQUE_DU_MODELE = {};
 Object.entries(MARQUES_VEHICULES).forEach(([marque, modeles]) => modeles.forEach((m) => { if (!(m in MARQUE_DU_MODELE) && m !== "mini") MARQUE_DU_MODELE[m] = marque; }));
 const MARQUES_AFFICHEES = { bmw: "BMW", mg: "MG", ds: "DS", vw: "VW", alfa: "Alfa Romeo", land: "Land Rover", citroen: "Citroën", mercedes: "Mercedes" };
 const MODELES_AFFICHES = { megane: "Mégane", scenic: "Scénic", serie: "Série", zoe: "ZOE", eos: "EOS", "t-roc": "T-Roc", "t-cross": "T-Cross", "c-hr": "C-HR" };
-const VEHICULES_IGNORES = ["agence"];
+// Profils d'agence (lignes de comptabilité, pas des ventes de voitures) : exclus du top,
+// que ce soit par le nom du commercial ou par le texte saisi dans « Véhicule ».
+const VEHICULES_IGNORES = ["agence", "redon"];
+const PROFILS_EXCLUS_TOP_VEHICULES = ["agence", "redon"];
 
 function sansAccents(texte) {
   return texte.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -2729,6 +2732,7 @@ function TopVehicules({ dossiers, estAdmin, carte, titre, sous, piste }) {
 
   const groupes = {};
   retenus.forEach((d) => {
+    if (PROFILS_EXCLUS_TOP_VEHICULES.includes(sansAccents(d.commercial_nom || ""))) return;
     const v = identifierVehicule(d.voiture);
     if (!v) return;
     const g = (groupes[v.cle] = groupes[v.cle] || { nom: v.nom, ventes: 0, ca: 0 });
